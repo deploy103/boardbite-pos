@@ -58,7 +58,7 @@
 2. Phase 3(주방/KDS)부터 진행: `/pos` 화면 실제 구현(신규/접수/조리중/준비완료 탭, 상태 전이 API `PATCH /api/staff/pos/orders/:id/...` 등), 경과시간/지연 표시, 알림음.
 3. `npm audit` 취약점(react-router-dom v7, express의 qs) 업그레이드 여부를 사용자와 상의 후 처리.
 
-**관련 커밋:** (이 작업 직후 커밋 예정)
+**관련 커밋:** `4cec715`(Phase 2 구현), `de2bcb3`/`cac8086`(CI: Gitleaks + typecheck/test/build 워크플로 추가, GitHub Actions에서 통과 확인)
 
 ## 2026-09-11 21:40
 
