@@ -2,7 +2,7 @@
 
 학교 반 부스에서 운영하는 보드게임 카페형 행사를 위한 **테이블오더 + KDS(주방) + POS + 정산** 통합 시스템.
 
-> 이 프로젝트는 현재 조사(Phase 0) 및 설계(Phase 1) 단계입니다. 진행 상황은 [`docs/DEVLOG.md`](docs/DEVLOG.md)와 [`docs/HANDOFF.md`](docs/HANDOFF.md)에서 확인할 수 있습니다.
+> 이 프로젝트는 현재 Phase 2(핵심 기반) 구현이 완료된 상태입니다. 진행 상황은 [`docs/DEVLOG.md`](docs/DEVLOG.md)와 [`docs/HANDOFF.md`](docs/HANDOFF.md)에서 확인할 수 있습니다.
 
 ## 운영 흐름 요약
 
@@ -26,16 +26,49 @@
 | [docs/HANDOFF.md](docs/HANDOFF.md) | 다음 작업자를 위한 인수인계 |
 | [docs/adr/](docs/adr/) | 아키텍처 결정 기록 (ADR) |
 
-## 로컬 실행 (예정)
+## 기술 스택
 
-기술 스택 선택이 완료되면 이 섹션에 다음 내용을 채웁니다.
+Node.js(TypeScript) + Express + Prisma + SQLite + React(Vite) + Socket.IO. 선택 이유는 [`docs/adr/0001-tech-stack.md`](docs/adr/0001-tech-stack.md) 참고.
 
-- 요구 사항 (Node 버전 등)
-- 설치: `npm install`
-- 환경변수: `.env.example`을 `.env`로 복사 후 값 채우기
-- 개발 서버 실행 명령
-- 시드 계정: `.env`의 `ADMINID/ADMINPASSWORD` 등 부트스트랩 계정으로 로그인
-- 테스트 실행 명령
+## 로컬 실행
+
+요구사항: Node.js 20 이상.
+
+```bash
+npm install
+
+# 환경변수 준비
+cp .env.example .env
+# .env를 열어 ADMINID/ADMINPASSWORD 등 값과 SESSION_SECRET을 실제 값으로 채운다.
+
+# 최초 1회: DB 마이그레이션 + 부트스트랩 계정 시드
+npm run prisma:migrate --workspace server
+
+# 개발 서버 (터미널 두 개)
+npm run dev:server   # http://localhost:3000 — API + Socket.IO
+npm run dev:client   # http://localhost:5173 — /api, /socket.io는 3000으로 프록시
+```
+
+로그인은 `/staff/login`에서 `.env`에 채운 `ADMINID/ADMINPASSWORD`(또는 FRONT/POS/SERVING 계정)로 진행하며,
+서버가 역할을 판정해 `/admin`, `/front`, `/pos`, `/serving`으로 자동 이동시킨다.
+
+손님 화면은 ADMIN에서 생성한 테이블의 `publicSlug`로 `/t/<slug>` 경로에 접속해 확인한다.
+
+### 프로덕션 유사 실행 (단일 프로세스)
+
+```bash
+npm run build:client
+npm run build:server
+npm run --workspace server start   # client/dist를 정적 서빙 + API + Socket.IO를 한 프로세스에서 제공
+```
+
+### 테스트
+
+```bash
+cd server && npx vitest run
+```
+
+격리된 SQLite 테스트 DB(`server/prisma/test.db`)를 자동으로 생성/정리하며, 개발용 `.env`나 `dev.db`에 영향을 주지 않는다.
 
 ## 기본 계정 (부트스트랩)
 
