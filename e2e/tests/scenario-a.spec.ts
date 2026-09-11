@@ -1,4 +1,4 @@
-import { test, expect, request as pwRequest } from "@playwright/test";
+import { test, expect, request as pwRequest, devices } from "@playwright/test";
 
 /**
  * 요구사항.md §21 시나리오 A(정상 흐름) 전체를 실제 브라우저로 재현한다.
@@ -7,6 +7,10 @@ import { test, expect, request as pwRequest } from "@playwright/test";
  *
  * 테이블/메뉴는 매 실행마다 고유한 번호/이름으로 API를 통해 만들어(ADMIN 계정) 다른
  * 테스트 실행과 데이터가 섞이지 않게 한다.
+ *
+ * 손님은 실제로는 거의 항상 본인 휴대폰으로 QR을 찍어 접속하므로(요구사항.md §7), 손님
+ * 컨텍스트만 iPhone 13 프로필(뷰포트+UA+터치)로 띄운다. FRONT/POS/SERVING은 매장 데스크톱/
+ * 태블릿 기준 그대로 둔다 — 스태프 화면까지 모바일로 돌리면 실행 시간만 늘고 실익이 없다.
  */
 test("시나리오 A: 정상 흐름 (오픈→주문→조리→서빙→정산→자동CLOSE)", async ({ browser, baseURL }) => {
   test.setTimeout(60_000);
@@ -55,7 +59,7 @@ test("시나리오 A: 정상 흐름 (오픈→주문→조리→서빙→정산�
   const openedTable = tablesAfterOpen.tables.find((t: { number: number }) => t.number === tableNumber);
   expect(openedTable, "방금 연 테이블을 찾지 못함").toBeTruthy();
 
-  const customerCtx = await browser.newContext();
+  const customerCtx = await browser.newContext({ ...devices["iPhone 13"] });
   const customerPage = await customerCtx.newPage();
   await customerPage.goto(`/t/${openedTable.publicSlug}`);
   await expect(customerPage.getByText(`${tableNumber}번 테이블`)).toBeVisible();

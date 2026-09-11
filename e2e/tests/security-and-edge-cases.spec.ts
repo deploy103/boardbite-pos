@@ -1,4 +1,9 @@
-import { test, expect, request as pwRequest } from "@playwright/test";
+import { test, expect, request as pwRequest, devices } from "@playwright/test";
+
+// 손님이 보는 /t/:slug 화면은 실제로는 거의 항상 휴대폰으로 접속하므로(요구사항.md §7),
+// 손님 대면 시나리오(I, D)는 iPhone 13 프로필로 띄운다. 특히 시나리오 D(더블탭)는 실제
+// 터치스크린 상호작용을 흉내내는 테스트라 모바일 프로필로 돌리는 편이 더 실효성 있다.
+const customerDevice = devices["iPhone 13"];
 
 test.describe("보안/엣지 케이스 (요구사항.md §21 시나리오 D, H, I)", () => {
   test("시나리오 I: OPEN되지 않은 테이블은 QR을 찍어도 주문 화면 대신 안내 문구가 보인다", async ({ browser, baseURL }) => {
@@ -9,7 +14,8 @@ test.describe("보안/엣지 케이스 (요구사항.md §21 시나리오 D, H, 
     const tableRes = await api.post("/api/staff/admin/tables", { data: { number: tableNumber } });
     const { table } = await tableRes.json();
 
-    const page = await browser.newPage();
+    const customerCtx = await browser.newContext({ ...customerDevice });
+    const page = await customerCtx.newPage();
     await page.goto(`/t/${table.publicSlug}`);
     await expect(page.getByText("현재 주문 가능한 테이블이 아닙니다")).toBeVisible({ timeout: 10_000 });
     // 메뉴 화면(담기 버튼)은 절대 보이면 안 된다.
@@ -57,7 +63,8 @@ test.describe("보안/엣지 케이스 (요구사항.md §21 시나리오 D, H, 
     await frontApi.post("/api/staff/login", { data: { username: "front", password: "e2e-front-pw-12345678" } });
     await frontApi.post(`/api/staff/front/tables/${table.id}/open`, { data: { guestCount: 1 } });
 
-    const page = await browser.newPage();
+    const customerCtx = await browser.newContext({ ...customerDevice });
+    const page = await customerCtx.newPage();
     await page.goto(`/t/${table.publicSlug}`);
     // 서버를 재사용하는 다른 E2E 테스트들이 이미 다른 카테고리/메뉴를 만들어뒀을 수 있으므로
     // (같은 실행 안에서 서버/DB를 공유), 이 테스트에서 만든 카테고리 탭으로 명시적으로 이동한다.
