@@ -72,6 +72,15 @@ cd server && npx vitest run
 
 격리된 SQLite 테스트 DB(`server/prisma/test.db`)를 자동으로 생성/정리하며, 개발용 `.env`나 `dev.db`에 영향을 주지 않는다.
 
+### E2E 테스트 (Playwright)
+
+```bash
+cd e2e && npx playwright install chromium   # 최초 1회
+cd .. && npm run test:e2e
+```
+
+클라이언트 빌드 + 격리된 DB(`server/prisma/e2e.db`) + 실제 서버 기동까지 자동으로 처리한다(`e2e/scripts/prepare-and-start.mjs`). 여러 역할(FRONT/POS/SERVING/손님)의 실제 브라우저 흐름을 검증한다.
+
 ## 기본 계정 (부트스트랩)
 
 `.env.example` 참고. 실제 배포 전 반드시 비밀번호를 변경합니다.
