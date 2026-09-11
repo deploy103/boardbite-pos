@@ -44,7 +44,7 @@ npm run dev:client      # http://localhost:5173 (API/소켓은 3000으로 프록
 
 - **실기기 테스트**: iPhone Safari/Android Chrome/iPad에서의 실제 확인은 이 환경에서 수행 불가 — 사람이 직접 해야 함.
 - UI 디자인 폴리싱: 1차 패스 완료(2026-09-12, `docs/DEVLOG.md` 참고 — KDS 4단 보드 잘림, 설정 화면 라벨 누락, 결제수단 화면 버튼 줄바꿈 3건 수정). Playwright로 스크린샷을 찍어 검토하는 방식이 이 환경에서도 통한다는 걸 확인했으니, 후속 작업자도 같은 방식(임시 스크립트로 로그인→조작→`page.screenshot()`→`Read` 도구로 확인, 끝나면 스크립트는 삭제)을 쓰면 된다. 다만 아직 전체 화면을 다 보진 못했으므로(결제내역/사용자/이용권/감사로그/메뉴 관리 탭 등 미검토) 계속 이어서 볼 것.
-- Playwright 시나리오는 Desktop Chrome 뷰포트만 다룬다. 모바일 뷰포트(`devices['iPhone 13']` 등) E2E는 후속 작업.
+- ~~Playwright 시나리오는 Desktop Chrome 뷰포트만 다룬다~~ → 2026-09-12에 완료: 손님 대면 컨텍스트(시나리오 A/D/I)는 `devices["iPhone 13"]`로 띄우도록 변경. FRONT/POS/SERVING/ADMIN은 매장 데스크톱 기준 그대로 유지(실익 대비 실행시간만 늘어남). 별도 모바일 `projects`를 추가하는 대신 손님 컨텍스트만 디바이스 프로필을 적용하는 방식을 택함 — 스태프 화면까지 전부 두 번 돌릴 필요는 없다고 판단.
 - 매출 리포트 `since` 필터는 시작일만 지원(종료일 없음).
 - `npm audit` moderate 취약점(react-router-dom, express→qs) — major 업그레이드 검토 보류 중.
 - **인프라 주의사항**:
