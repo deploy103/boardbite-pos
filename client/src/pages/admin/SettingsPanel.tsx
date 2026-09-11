@@ -82,38 +82,41 @@ export default function SettingsPanel() {
 
       <h2 style={{ marginTop: 24 }}>KDS 지연 기준</h2>
       <p className="text-muted">임박 기준은 지연 기준보다 작아야 해요.</p>
-      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-        <input
-          className="field"
-          style={{ maxWidth: 140 }}
-          type="number"
-          placeholder="임박(분)"
-          value={warnMinutes}
-          onChange={(e) => setWarnMinutes(e.target.value)}
-        />
-        <input
-          className="field"
-          style={{ maxWidth: 140 }}
-          type="number"
-          placeholder="지연(분)"
-          value={dangerMinutes}
-          onChange={(e) => setDangerMinutes(e.target.value)}
-        />
+      <div style={{ display: "flex", gap: 8, alignItems: "flex-end", flexWrap: "wrap" }}>
+        <label className="field-label-group" style={{ maxWidth: 140 }}>
+          <span className="field-label">임박 기준(분)</span>
+          <input
+            className="field"
+            type="number"
+            value={warnMinutes}
+            onChange={(e) => setWarnMinutes(e.target.value)}
+          />
+        </label>
+        <label className="field-label-group" style={{ maxWidth: 140 }}>
+          <span className="field-label">지연 기준(분)</span>
+          <input
+            className="field"
+            type="number"
+            value={dangerMinutes}
+            onChange={(e) => setDangerMinutes(e.target.value)}
+          />
+        </label>
         <button className="btn-secondary" onClick={saveKdsThresholds}>
           저장
         </button>
       </div>
 
       <h2 style={{ marginTop: 24 }}>서빙완료 되돌리기 허용 시간</h2>
-      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-        <input
-          className="field"
-          style={{ maxWidth: 140 }}
-          type="number"
-          placeholder="초"
-          value={revertSeconds}
-          onChange={(e) => setRevertSeconds(e.target.value)}
-        />
+      <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
+        <label className="field-label-group" style={{ maxWidth: 140 }}>
+          <span className="field-label">허용 시간(초)</span>
+          <input
+            className="field"
+            type="number"
+            value={revertSeconds}
+            onChange={(e) => setRevertSeconds(e.target.value)}
+          />
+        </label>
         <button className="btn-secondary" onClick={saveRevertWindow}>
           저장
         </button>

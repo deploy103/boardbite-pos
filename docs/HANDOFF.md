@@ -43,12 +43,12 @@ npm run dev:client      # http://localhost:5173 (API/소켓은 3000으로 프록
 ## 아직 안 된 것
 
 - **실기기 테스트**: iPhone Safari/Android Chrome/iPad에서의 실제 확인은 이 환경에서 수행 불가 — 사람이 직접 해야 함.
-- UI 디자인 폴리싱: FRONT/SERVING/ADMIN 신규 화면은 기능 중심 1차 구현. 실제 브라우저로 열어서 레이아웃/터치영역/카피를 다듬는 패스가 필요.
+- UI 디자인 폴리싱: 1차 패스 완료(2026-09-12, `docs/DEVLOG.md` 참고 — KDS 4단 보드 잘림, 설정 화면 라벨 누락, 결제수단 화면 버튼 줄바꿈 3건 수정). Playwright로 스크린샷을 찍어 검토하는 방식이 이 환경에서도 통한다는 걸 확인했으니, 후속 작업자도 같은 방식(임시 스크립트로 로그인→조작→`page.screenshot()`→`Read` 도구로 확인, 끝나면 스크립트는 삭제)을 쓰면 된다. 다만 아직 전체 화면을 다 보진 못했으므로(결제내역/사용자/이용권/감사로그/메뉴 관리 탭 등 미검토) 계속 이어서 볼 것.
 - Playwright 시나리오는 Desktop Chrome 뷰포트만 다룬다. 모바일 뷰포트(`devices['iPhone 13']` 등) E2E는 후속 작업.
 - 매출 리포트 `since` 필터는 시작일만 지원(종료일 없음).
 - `npm audit` moderate 취약점(react-router-dom, express→qs) — major 업그레이드 검토 보류 중.
 - **인프라 주의사항**:
-  1. WSL(`/mnt/c/...`) 환경에서 `tsx watch`/Vite dev 서버가 파일 저장만으로 반영되지 않거나 간헐적으로 종료되는 현상이 있다. 코드 변경 후 반영 안 되면 수동 재시작. **죽었는지 확인할 때는 curl 실패 한 번만으로 판단하지 말고 `ps -ef | grep <프로세스>`와 `ss -ltnp | grep <포트>`로 재확인할 것**(오탐 경험 있음).
+  1. WSL(`/mnt/c/...`) 환경에서 `tsx watch`/Vite dev 서버가 파일 저장만으로 반영되지 않거나 간헐적으로 종료되는 현상이 있다. 코드 변경 후 반영 안 되면 수동 재시작. **죽었는지 확인할 때는 curl 실패 한 번만으로 판단하지 말고 `ps -ef | grep <프로세스>`와 `ss -ltnp | grep <포트>`로 재확인할 것**(오탐 경험 있음). **역방향 오탐도 있다**: 프로세스는 살아있는데 파일 변경 감지(chokidar)가 조용히 실패해서 몇 시간 전 코드로 계속 응답하는 경우가 반복 발생했다(2026-09-12, KDS CSS 수정/ADMIN 백업 탭/백업 타임스탬프 버그 재조사 때 3연속 재현 — 자세한 건 DEVLOG 참고). **코드를 고친 뒤 "진짜 반영됐는지"를 확인할 때는 브라우저/curl로 확인하기 전에 반드시 해당 dev 서버 프로세스를 kill 하고 재기동할 것.** 에러 메시지 없이 조용히 실패하므로 매우 헷갈린다.
   2. `npx vitest run`을 동시에 두 개 이상 돌리면 공유 SQLite 테스트 DB(`server/prisma/test.db`)가 충돌한다(순차 실행할 것). Playwright E2E는 별도 DB(`e2e.db`)를 쓰므로 vitest와는 충돌하지 않지만, E2E끼리 동시 실행은 마찬가지로 피할 것.
   3. `fs.Stats.birthtime`은 이 환경(WSL DrvFs)에서 항상 epoch를 반환한다 — 파일 생성 시각이 필요하면 파일명에 인코딩하거나 `mtime`을 쓸 것(`server/src/services/backup.ts` 참고 사례).
 

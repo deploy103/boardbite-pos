@@ -5,6 +5,53 @@
 
 ---
 
+## 2026-09-12 02:40
+
+**작업자/에이전트:** Claude (메인 개발 에이전트)
+
+**이번 작업 목적:** Phase 7 안정화 — HANDOFF.md에 남아있던 "UI 디자인 폴리싱" 항목을 실제로 진행. 브라우저를 직접 볼 수 없으므로, Playwright로 FRONT/손님(모바일 뷰포트)/POS/SERVING/ADMIN 전 화면을 실제 로그인·조작해 스크린샷을 찍고 하나씩 검토하는 방식을 사용.
+
+**발견하고 고친 실제 UI 버그 3건:**
+1. **KDS 4단 보드가 표준 데스크톱 화면(1280px)에서 4번째 컬럼("준비완료")이 잘림**: `.kds-columns`의 `grid-template-columns: repeat(4, minmax(260px,1fr))`가 `.page--wide`(960px) 안에서 실제 사용 가능한 폭(928px)보다 넓게 요구해 `overflow-x:auto`로 넘어가지만, 스크롤 힌트(그림자/화살표)가 전혀 없어 직원이 스크롤해야 한다는 사실 자체를 알기 어려움. `minmax(260px→200px)`, `gap: var(--space-4)→var(--space-3)`로 줄여 표준 화면에서 4컬럼이 스크롤 없이 한 번에 보이도록 수정(`client/src/styles.css`).
+2. **운영설정 화면의 KDS 지연 기준/서빙완료 되돌리기 시간 입력칸이 placeholder만으로 라벨을 대신함**: 이 값들은 항상 기존 설정값으로 미리 채워져 있으므로 placeholder(예: "임박(분)")가 절대 보이지 않아, 화면만 봐서는 "5"와 "10" 중 어느 게 임박이고 어느 게 지연인지 알 수 없었음. placeholder를 라벨 대용으로 쓰면 값이 채워지는 순간 무용해진다는 걸 다시 확인 — 항상 보이는 `<label>` + 새 `.field-label`/`.field-label-group` 클래스로 교체(`client/src/pages/admin/SettingsPanel.tsx`, `client/src/styles.css`).
+3. **결제수단 관리 화면의 "이름 저장" 버튼이 좁은 flex 행 안에서 두 줄로 줄바꿈됨**: `.btn-secondary`에 `flex-shrink`/`white-space` 지정이 없어 옆의 `input.field`(width:100%)에 밀려 버튼 폭이 줄어들며 텍스트가 깨짐. `.btn-secondary`에 `flex-shrink:0; white-space:nowrap;`, `.field`에 `min-width:0;`을 추가해 어떤 flex 컨테이너에 들어가도 안전하게 동작하도록 수정 — 전역 클래스라 다른 화면(체크아웃 결제수단 선택, 카테고리 탭 등)에도 유효하지만 그쪽은 이미 충분한 폭이 있어 시각적으로 달라지지 않음을 스크린샷으로 확인.
+
+**과정에서 겪은 (실제 버그가 아니었던) 오탐 2건 — 모두 WSL `tsx watch`/Vite dev 서버가 파일 변경을 반영하지 못한 것이 원인:**
+- ADMIN 상단 탭에 "백업" 탭이 안 보임 → 코드는 이미 정상(`AdminHome.tsx`에 이미 있었음), Vite dev 서버를 완전히 재시작하니 바로 나타남.
+- 백업 목록의 생성일시가 다시 1970-01-01로 표시됨(이전에 고쳤던 버그) → `resolveCreatedAt()` 정규식은 여전히 정상(`node -e`로 직접 검증), 문제는 **9월 11일부터 한 번도 재시작되지 않은 `tsx watch` 서버 프로세스**가 그 수정 이전 코드로 계속 떠 있었던 것. 서버 재시작 후 정상 값(`2026-09-11T14:37:01.408Z`) 반환 확인.
+- 교훈: 이 세션에서만 CSS 변경이 반영 안 됨(1회) + JS 변경이 반영 안 됨(2회, admin 탭/서버 재기동) 총 3번 같은 종류의 오탐을 겪음 — **코드를 고친 뒤 "고쳐졌는지" 검증할 때는 반드시 dev 서버를 완전히 재시작(kill 후 재기동)한 다음 확인할 것.** HMR/watch가 조용히 실패해도 에러가 안 뜨기 때문에 매우 헷갈림.
+
+**실행한 테스트:** `npx tsc -p client/tsconfig.json --noEmit` 클린. 스크린샷 기반 수기 검토(자동화된 시각 회귀 테스트는 아님 — 임시 Playwright 스크립트로 촬영 후 직접 확인, 스크립트 자체는 커밋하지 않고 삭제).
+
+**남은 문제:** 실기기 테스트(사람 필요), 모바일 뷰포트 Playwright 프로젝트 추가는 여전히 미착수.
+
+**다음 작업자가 가장 먼저 할 일:** 계속해서 모바일 뷰포트 E2E 프로젝트 추가를 진행할 것.
+
+**관련 커밋:** (이 작업 직후 커밋 예정)
+
+---
+
+## 2026-09-12 01:55
+
+**작업자/에이전트:** Claude (메인 개발 에이전트)
+
+**이번 작업 목적:** Phase 7 안정화 계속 — 직전 작업(E2E CI 잡 추가)이 실제로 CI에서 통과하는지 끝까지 확인하고 발견된 문제를 고침.
+
+**발견하고 고친 문제:**
+1. `e2e` 잡이 `@prisma/client did not initialize yet` 로 실패 — `test` 잡에는 있던 `npx prisma generate` 스텝이 `e2e` 잡에는 빠져 있었음. 동일하게 추가.
+2. Gitleaks가 `e2e/tests/security-and-edge-cases.spec.ts`의 더미 테스트 비밀번호(`e2e-front-pw-12345678` 등)를 `generic-api-key` 유출로 오탐. `.gitleaks.toml`을 새로 만들어 `e2e/` 경로를 allowlist 처리.
+3. 그 `.gitleaks.toml` 자체가 `[[allowlist]]`(배열)로 작성되어 있어 gitleaks 8.24.3이 `"'Allowlist' expected a map, got 'slice'"`로 설정 로드 자체에 실패(스캔을 아예 못 돌리고 `results.sarif`도 안 만들어져 업로드 단계에서 2차로 죽음). 최상위 `allowlist`는 배열이 아니라 단일 테이블이어야 함 — `[allowlist]`로 수정.
+
+**검증:** `gh run view`로 커밋 `f7f6641` 기준 워크플로우 실행(`34614800136`)을 직접 확인 — `End-to-end (Playwright)`, `Typecheck & test`, `Secret scan (Gitleaks)` 3개 잡 전부 초록. CI에 E2E가 처음으로 실제 녹색으로 편입됨.
+
+**남은 문제:** `docs/HANDOFF.md`와 동일 — 실기기 테스트, 모바일 뷰포트 E2E, UI 디자인 폴리싱.
+
+**다음 작업자가 가장 먼저 할 일:** 이어서 모바일 뷰포트 Playwright 프로젝트 추가 및 실제 화면 스크린샷 기반 UI 폴리싱 진행 예정(본 세션에서 계속).
+
+**관련 커밋:** `da3fb31`, `f7f6641`
+
+---
+
 ## 2026-09-12 01:15
 
 **작업자/에이전트:** Claude (메인 개발 에이전트)
