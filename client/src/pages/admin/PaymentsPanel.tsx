@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "../../lib/api.js";
 import { useErrorBanner } from "./shared.js";
 
@@ -40,6 +40,13 @@ export default function PaymentsPanel() {
     setPayments(d.payments);
     setSearched(true);
   });
+
+  // 다른 관리자 탭(테이블/메뉴/사용자 등)은 모두 탭을 열면 즉시 목록을 보여주므로,
+  // 결제내역만 검색 버튼을 눌러야 뭔가 뜨는 건 일관성이 없다 — 필터 없이 최근 내역을 바로 보여준다.
+  useEffect(() => {
+    search();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <section>

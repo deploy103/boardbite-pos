@@ -26,7 +26,11 @@ test.describe("보안/엣지 케이스 (요구사항.md §21 시나리오 D, H, 
     await page.waitForURL("**/pos");
 
     // 클라이언트가 role을 선택하는 게 아니라, POS 계정으로 /admin URL을 직접 쳐도 차단되어야 한다.
-    await page.goto("/admin");
+    // useStaffMe가 /api/staff/me 응답을 받은 뒤 window.location.href로 하드 리다이렉트하는데,
+    // 이 리다이렉트가 /admin 최초 로드의 load 이벤트보다 먼저 일어나면 그 내비게이션 자체가
+    // net::ERR_ABORTED로 취소된다 — 정상적으로 의도된 동작이므로 goto의 실패는 무시하고
+    // 최종적으로 로그인 화면에 도착하는지만 확인한다.
+    await page.goto("/admin").catch(() => undefined);
     await page.waitForURL("**/staff/login", { timeout: 10_000 });
 
     // 서버 API 레벨에서도 동일하게 403이어야 한다(클라이언트 방어는 보조 수단일 뿐).
@@ -64,8 +68,16 @@ test.describe("보안/엣지 케이스 (요구사항.md §21 시나리오 D, H, 
     await cartCta.click();
     const orderButton = page.getByRole("button", { name: "주문하기" });
 
-    // 실제 손가락 더블탭처럼 거의 동시에 두 번 클릭한다.
-    await Promise.all([orderButton.click(), orderButton.click()]);
+    // 실제 손가락 더블탭처럼 거의 동시에 두 번 클릭한다. 버튼은 첫 클릭에서 즉시(동기적으로)
+    // disabled 처리되고 주문이 성공하면 시트 자체가 닫히며 DOM에서 사라지므로, 두 번째 클릭은
+    // "비활성화된 엘리먼트"나 "DOM에서 detach된 엘리먼트"를 계속 재시도하다 실패할 수 있다 —
+    // 이것 자체가 클라이언트 방어가 정상 동작했다는 뜻이므로 실패를 무시한다. 두 요청이 정말
+    // 거의 동시에 서버에 도달하는 경우(진짜 레이스)만 최종 금액 검증으로 판별한다.
+    const clickOpts = { timeout: 2_000 };
+    await Promise.all([
+      orderButton.click(clickOpts).catch(() => undefined),
+      orderButton.click(clickOpts).catch(() => undefined),
+    ]);
 
     await expect(page.getByText("주문 확인 중")).toBeVisible({ timeout: 10_000 });
 
