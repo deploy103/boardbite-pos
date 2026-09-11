@@ -2,6 +2,9 @@ import { prisma } from "../prisma.js";
 import { generateToken } from "./tableToken.js";
 import { recordAuditLog } from "./auditLog.js";
 import { appEvents, RealtimeEvent } from "../realtime.js";
+import { computeBill } from "./billing.js";
+
+const ACTIVE_ORDER_STATUSES = ["NEW", "ACCEPTED", "PREPARING", "READY"] as const;
 
 export class TableSessionError extends Error {
   constructor(message: string, public status = 409) {
@@ -72,7 +75,7 @@ export async function closeTable(input: { tableId: string; closedById: string; r
   if (!table) throw new TableSessionError("존재하지 않는 테이블입니다.", 404);
 
   const session = await prisma.tableSession.findFirst({
-    where: { tableId: table.id, status: "ACTIVE" },
+    where: { tableId: table.id, status: { in: ["ACTIVE", "PAID_PENDING_SERVICE"] } },
     orderBy: { openedAt: "desc" },
   });
   if (!session) throw new TableSessionError("이미 종료된 테이블입니다.");
@@ -139,4 +142,69 @@ export async function extendGameTime(input: { tableSessionId: string; planId: st
 
 export function currentGameEndsAt(gameUsages: { endsAt: Date }[]): Date | null {
   return gameUsages.reduce<Date | null>((max, usage) => (!max || usage.endsAt > max ? usage.endsAt : max), null);
+}
+
+export type AutoSettleOutcome = "CLOSED" | "PENDING_SERVICE" | "NO_CHANGE";
+
+/**
+ * 완납(remaining === 0) 시점마다 호출한다 — 결제 생성 직후(payment.ts), 그리고
+ * PAID_PENDING_SERVICE 상태에서 마지막 미서빙 주문이 SERVED로 바뀔 때(order.ts) 호출된다.
+ *
+ * 요구사항.md §4.4:
+ *   remaining == 0 이고 미서빙 주문이 없음 → 자동 CLOSE
+ *   remaining == 0 이지만 미서빙 주문이 있음 → PAID_PENDING_SERVICE로 표시, 신규 주문만 차단
+ */
+export async function maybeAutoSettleTableSession(tableSessionId: string): Promise<AutoSettleOutcome> {
+  const session = await prisma.tableSession.findUnique({ where: { id: tableSessionId } });
+  if (!session || (session.status !== "ACTIVE" && session.status !== "PAID_PENDING_SERVICE")) {
+    return "NO_CHANGE";
+  }
+
+  const bill = await computeBill(tableSessionId);
+  if (bill.remainingAmount !== 0) {
+    // 취소 등으로 다시 미수금이 생긴 경우 PAID_PENDING_SERVICE였다면 ACTIVE로 되돌린다.
+    if (session.status === "PAID_PENDING_SERVICE") {
+      await prisma.tableSession.update({ where: { id: session.id }, data: { status: "ACTIVE" } });
+      await prisma.table.update({ where: { id: session.tableId }, data: { status: "OPEN" } });
+    }
+    return "NO_CHANGE";
+  }
+
+  const unservedCount = await prisma.order.count({
+    where: { tableSessionId, status: { in: [...ACTIVE_ORDER_STATUSES] } },
+  });
+
+  if (unservedCount === 0) {
+    await prisma.$transaction([
+      prisma.tableSession.update({
+        where: { id: session.id },
+        data: { status: "CLOSED", closedAt: new Date(), closeReason: "AUTO_SETTLED" },
+      }),
+      prisma.table.update({ where: { id: session.tableId }, data: { status: "AVAILABLE" } }),
+    ]);
+    await recordAuditLog({
+      actorType: "SYSTEM",
+      action: "TABLE_CLOSED",
+      targetType: "TableSession",
+      targetId: session.id,
+      metadata: { reason: "AUTO_SETTLED" },
+    });
+    appEvents.emit(RealtimeEvent.TableClosed, { tableId: session.tableId, tableSessionId: session.id });
+    return "CLOSED";
+  }
+
+  if (session.status !== "PAID_PENDING_SERVICE") {
+    await prisma.$transaction([
+      prisma.tableSession.update({ where: { id: session.id }, data: { status: "PAID_PENDING_SERVICE" } }),
+      prisma.table.update({ where: { id: session.tableId }, data: { status: "SETTLING" } }),
+    ]);
+    await recordAuditLog({
+      actorType: "SYSTEM",
+      action: "TABLE_PAID_PENDING_SERVICE",
+      targetType: "TableSession",
+      targetId: session.id,
+      metadata: { unservedCount },
+    });
+  }
+  return "PENDING_SERVICE";
 }

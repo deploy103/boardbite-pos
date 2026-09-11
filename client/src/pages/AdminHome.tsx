@@ -1,8 +1,13 @@
 import { useEffect, useState } from "react";
-import { api, ApiError } from "../lib/api.js";
+import { api } from "../lib/api.js";
 import { useStaffMe } from "../lib/useStaffMe.js";
+import { useErrorBanner } from "./admin/shared.js";
+import PaymentMethodsPanel from "./admin/PaymentMethodsPanel.js";
+import PaymentsPanel from "./admin/PaymentsPanel.js";
+import RevenuePanel from "./admin/RevenuePanel.js";
+import SettingsPanel from "./admin/SettingsPanel.js";
 
-type Tab = "tables" | "menu" | "users" | "game-plans" | "logs";
+type Tab = "tables" | "menu" | "users" | "game-plans" | "logs" | "payment-methods" | "payments" | "revenue" | "settings";
 
 export default function AdminHome() {
   const { me } = useStaffMe("ADMIN");
@@ -14,13 +19,19 @@ export default function AdminHome() {
     <div className="page page--wide">
       <h1>ADMIN</h1>
       <nav style={{ display: "flex", gap: 8, margin: "16px 0", flexWrap: "wrap" }}>
-        {(["tables", "menu", "users", "game-plans", "logs"] as Tab[]).map((t) => (
+        {(
+          ["tables", "menu", "users", "game-plans", "logs", "payment-methods", "payments", "revenue", "settings"] as Tab[]
+        ).map((t) => (
           <button key={t} className="btn-secondary" onClick={() => setTab(t)} disabled={tab === t}>
             {t === "tables" && "테이블"}
             {t === "menu" && "메뉴"}
             {t === "users" && "사용자"}
             {t === "game-plans" && "이용권"}
             {t === "logs" && "감사 로그"}
+            {t === "payment-methods" && "결제수단"}
+            {t === "payments" && "결제내역"}
+            {t === "revenue" && "매출현황"}
+            {t === "settings" && "운영설정"}
           </button>
         ))}
       </nav>
@@ -29,21 +40,12 @@ export default function AdminHome() {
       {tab === "users" && <UsersPanel />}
       {tab === "game-plans" && <GamePlansPanel />}
       {tab === "logs" && <LogsPanel />}
+      {tab === "payment-methods" && <PaymentMethodsPanel />}
+      {tab === "payments" && <PaymentsPanel />}
+      {tab === "revenue" && <RevenuePanel />}
+      {tab === "settings" && <SettingsPanel />}
     </div>
   );
-}
-
-function useErrorBanner() {
-  const [error, setError] = useState<string | null>(null);
-  const wrap = (fn: () => Promise<void>) => async () => {
-    try {
-      setError(null);
-      await fn();
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : "요청 처리 중 오류가 발생했어요.");
-    }
-  };
-  return { error, setError, wrap };
 }
 
 function TablesPanel() {
@@ -75,6 +77,18 @@ function TablesPanel() {
       await refresh();
     })();
 
+  const toggleOrdersLocked = (t: any) =>
+    wrap(async () => {
+      await api.patch(`/api/staff/admin/tables/${t.id}`, { ordersLocked: !t.ordersLocked });
+      await refresh();
+    })();
+
+  const togglePaymentsLocked = (t: any) =>
+    wrap(async () => {
+      await api.patch(`/api/staff/admin/tables/${t.id}`, { paymentsLocked: !t.paymentsLocked });
+      await refresh();
+    })();
+
   return (
     <section>
       <div style={{ display: "flex", gap: 8 }}>
@@ -87,10 +101,18 @@ function TablesPanel() {
       {tables.map((t) => (
         <div key={t.id} className="list-row">
           <div>
-            <strong>{t.number}번</strong> · <span className="badge">{t.status}</span>
+            <strong>{t.number}번</strong> · <span className="badge">{t.status}</span>{" "}
+            {t.ordersLocked && <span className="badge badge--warn">주문 잠금</span>}{" "}
+            {t.paymentsLocked && <span className="badge badge--warn">결제 잠금</span>}
             <div className="text-muted">주문 URL: /t/{t.publicSlug}</div>
           </div>
-          <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button className="btn-secondary" onClick={() => toggleOrdersLocked(t)}>
+              {t.ordersLocked ? "주문 잠금 해제" : "주문 잠금"}
+            </button>
+            <button className="btn-secondary" onClick={() => togglePaymentsLocked(t)}>
+              {t.paymentsLocked ? "결제 잠금 해제" : "결제 잠금"}
+            </button>
             <button className="btn-secondary" onClick={() => rotate(t.id)}>
               토큰 회전
             </button>

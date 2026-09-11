@@ -52,13 +52,15 @@ model LoginAttempt {
 }
 
 model Table {
-  id         String   @id @default(cuid())
-  number     Int      @unique
-  name       String?
-  status     String   @default("AVAILABLE") // DISABLED | AVAILABLE | OPEN | SETTLING
-  publicSlug String   @unique
-  sortOrder  Int      @default(0)
-  createdAt  DateTime @default(now())
+  id             String   @id @default(cuid())
+  number         Int      @unique
+  name           String?
+  status         String   @default("AVAILABLE") // DISABLED | AVAILABLE | OPEN | SETTLING
+  publicSlug     String   @unique
+  sortOrder      Int      @default(0)
+  ordersLocked   Boolean  @default(false) // ADMIN: 이 테이블만 신규 주문 차단(요구사항.md §13.4)
+  paymentsLocked Boolean  @default(false) // ADMIN: 이 테이블만 정산 차단(요구사항.md §13.4)
+  createdAt      DateTime @default(now())
 
   sessions TableSession[]
 }
@@ -68,7 +70,7 @@ model TableSession {
   tableId     String
   table       Table    @relation(fields: [tableId], references: [id])
   token       String   @unique
-  status      String   @default("ACTIVE") // ACTIVE | CLOSED | EXPIRED
+  status      String   @default("ACTIVE") // ACTIVE | PAID_PENDING_SERVICE | CLOSED | EXPIRED
   guestCount  Int?
   note        String?
   openedById  String
@@ -219,9 +221,11 @@ model Payment {
   id                String       @id @default(cuid())
   tableSessionId    String
   tableSession      TableSession @relation(fields: [tableSessionId], references: [id])
-  kind              String // CHARGE | VOID | REFUND
-  method            String // CASH | CARD | OTHER | (ADMIN 정의 확장)
-  amount            Int
+  kind              String // CHARGE | DISCOUNT | VOID | REFUND
+  method            String // PaymentMethod.code (CASH | CARD | OTHER | ADMIN 정의 확장)
+  amount            Int // 실제 정산액에 반영되는 금액(항상 양수, kind로 부호 의미 구분)
+  tenderedAmount    Int? // 현금 결제 시 "받은 금액"(영수증 표시용, 정산액과 다를 수 있음)
+  changeAmount      Int? // 현금 결제 시 거스름돈 = tenderedAmount - amount
   payerLabel        String?
   reversedPaymentId String?
   reversedPayment   Payment?     @relation("PaymentReversal", fields: [reversedPaymentId], references: [id])
@@ -235,6 +239,26 @@ model Payment {
   allocations PaymentAllocation[]
 
   @@index([tableSessionId])
+}
+
+model PaymentMethod {
+  id        String  @id @default(cuid())
+  code      String  @unique // "CASH" | "CARD" | "OTHER" | ADMIN이 추가한 코드
+  name      String
+  isCash    Boolean @default(false) // true인 결제수단만 받은금액/거스름돈 계산이 적용됨
+  isActive  Boolean @default(true)
+  sortOrder Int     @default(0)
+}
+
+model OperationSettings {
+  // 싱글턴 행(id=1 고정). docs/ARCHITECTURE.md §9 "운영 설정" 참고.
+  id                    Int      @id @default(1)
+  orderingEnabled       Boolean  @default(true) // 전체 주문 기능 활성/비활성 (요구사항.md §19 "운영 모드")
+  paymentsEnabled       Boolean  @default(true) // 전체 결제 기능 활성/비활성
+  kdsWarnAfterSeconds   Int      @default(300) // KDS 카드 "임박" 배지 기준(초) — 기본 5분
+  kdsDangerAfterSeconds Int      @default(600) // KDS 카드 "지연" 배지 기준(초) — 기본 10분
+  servedRevertWindowSeconds Int  @default(180) // SERVING "서빙완료 되돌리기" 권한 없이 허용되는 시간(초) — 기본 3분
+  updatedAt             DateTime @updatedAt
 }
 
 model PaymentAllocation {

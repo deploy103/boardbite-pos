@@ -58,6 +58,24 @@ async function main() {
     });
     console.log("[seed] 기본 보드게임 이용권 3종 생성");
   }
+
+  const paymentMethodCount = await prisma.paymentMethod.count();
+  if (paymentMethodCount === 0) {
+    await prisma.paymentMethod.createMany({
+      data: [
+        { code: "CASH", name: "현금", isCash: true, sortOrder: 0 },
+        { code: "CARD", name: "카드", isCash: false, sortOrder: 1 },
+        { code: "OTHER", name: "기타", isCash: false, sortOrder: 2 },
+      ],
+    });
+    console.log("[seed] 기본 결제수단 3종 생성 (현금/카드/기타)");
+  }
+
+  const settings = await prisma.operationSettings.findUnique({ where: { id: 1 } });
+  if (!settings) {
+    await prisma.operationSettings.create({ data: { id: 1 } });
+    console.log("[seed] 운영 설정 기본값 생성");
+  }
 }
 
 main()

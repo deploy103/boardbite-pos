@@ -18,11 +18,14 @@ coverage/
 *.sqlite
 *.sqlite3
 *.db
+*.db-journal
+*.db-wal
+*.db-shm
 /data/
 /prisma/dev.db*
 
 # Backups
-/backups/
+backups/
 *.dump
 *.bak
 

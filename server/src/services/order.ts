@@ -3,6 +3,7 @@ import { prisma } from "../prisma.js";
 import { recordAuditLog } from "./auditLog.js";
 import { appEvents, RealtimeEvent } from "../realtime.js";
 import type { OrderStatus } from "../types/domain.js";
+import { maybeAutoSettleTableSession } from "./tableSession.js";
 
 export interface CreateOrderItemInput {
   menuItemId: string;
@@ -196,8 +197,10 @@ export function acceptOrder(orderId: string, staffId: string) {
   return applyTransition(orderId, ["NEW"], "ACCEPTED", { acceptedAt: new Date() }, staffId, "ORDER_ACCEPTED");
 }
 
-export function rejectOrder(orderId: string, staffId: string, reason: string) {
-  return applyTransition(orderId, ["NEW"], "REJECTED", { rejectReason: reason }, staffId, "ORDER_REJECTED", { reason });
+export async function rejectOrder(orderId: string, staffId: string, reason: string) {
+  const order = await applyTransition(orderId, ["NEW"], "REJECTED", { rejectReason: reason }, staffId, "ORDER_REJECTED", { reason });
+  await maybeAutoSettleTableSession(order.tableSessionId);
+  return order;
 }
 
 export function startPreparing(orderId: string, staffId: string) {
@@ -208,8 +211,11 @@ export function markReady(orderId: string, staffId: string) {
   return applyTransition(orderId, ["PREPARING"], "READY", { readyAt: new Date() }, staffId, "ORDER_READY");
 }
 
-export function markServed(orderId: string, staffId: string) {
-  return applyTransition(orderId, ["READY"], "SERVED", { servedAt: new Date() }, staffId, "ORDER_SERVED");
+export async function markServed(orderId: string, staffId: string) {
+  const order = await applyTransition(orderId, ["READY"], "SERVED", { servedAt: new Date() }, staffId, "ORDER_SERVED");
+  // 완납 후 마지막 미서빙 주문이 이제 SERVED가 되었다면 테이블을 자동 CLOSE한다(요구사항.md §4.4).
+  await maybeAutoSettleTableSession(order.tableSessionId);
+  return order;
 }
 
 /** 잘못 누른 서빙 완료를 되돌린다. 시간 제한/권한 정책은 라우트(SERVING) 레벨에서 강제한다. */
@@ -217,8 +223,8 @@ export function revertServedToReady(orderId: string, staffId: string) {
   return applyTransition(orderId, ["SERVED"], "READY", { servedAt: null }, staffId, "ORDER_SERVED_REVERTED");
 }
 
-export function cancelOrder(orderId: string, staffId: string, reason: string) {
-  return applyTransition(
+export async function cancelOrder(orderId: string, staffId: string, reason: string) {
+  const order = await applyTransition(
     orderId,
     ["NEW", "ACCEPTED", "PREPARING"],
     "CANCELLED",
@@ -227,6 +233,9 @@ export function cancelOrder(orderId: string, staffId: string, reason: string) {
     "ORDER_CANCELLED",
     { reason },
   );
+  // 취소로 인해 미수금이 음수(환불 필요)가 될 수 있다 — computeBill()이 그대로 드러내며 별도 플래그는 두지 않는다.
+  await maybeAutoSettleTableSession(order.tableSessionId);
+  return order;
 }
 
 /** KDS 보드용 — 활성 주문(NEW/ACCEPTED/PREPARING/READY)을 상태별로 묶어 반환한다. */

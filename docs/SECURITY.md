@@ -19,9 +19,14 @@
 | XSS | 프레임워크 기본 텍스트 바인딩만 사용, `dangerouslySetInnerHTML` 금지, CSP 헤더 | 프론트엔드 렌더링 규칙 |
 | SQL Injection | Prisma 쿼리 빌더만 사용, raw SQL 문자열 결합 금지(코드리뷰 게이트) | 전체 DB 접근 계층 |
 | Role escalation / 관리자 API 직접 호출 | 역할은 서버 세션+DB 재검증, `requireRole()` 미들웨어를 라우터 전체에 일괄 적용 | `/api/admin/*`, `/api/staff/*` |
-| 결제 중복 처리 | 결제 생성도 `Idempotency-Key` 필수 | Payment 모델 |
-| 동시 부분결제 race condition(초과결제) | 트랜잭션 + `SELECT ... FOR UPDATE` + 조건부 UPDATE | 결제 처리 서비스 로직 |
+| 결제 중복 처리 | 결제/할인 생성도 `idempotencyKey` UNIQUE 제약 필수. 사전조회-트랜잭션 사이의 경합은 P2002 캐치 후 기존 레코드 반환으로 이중 방어 | `server/src/services/payment.ts` |
+| 동시 부분결제 race condition(초과결제) | SQLite는 `SELECT ... FOR UPDATE`를 지원하지 않으므로, Prisma 커넥션 풀을 1개로 고정(`connection_limit=1`)해 트랜잭션을 애플리케이션 레벨에서 완전 직렬화하고, 잔액/이미 결제된 수량은 항상 트랜잭션 내부에서 재계산한다 | `docs/adr/0005-sqlite-write-concurrency.md`, `payment.ts` |
+| 상품별 결제 초과 선택(동일 상품 2개 중 3개 결제 시도 등) | `PaymentAllocation` 집계로 항목별 "이미 결제된 수량"을 매 결제마다 재계산해 초과 시 409 | `computeItemPaymentStatus()`(billing.ts) |
+| 비현금 결제 초과수납 | 카드/기타 결제는 남은 금액을 초과하면 400. 오직 현금(`PaymentMethod.isCash`)만 초과 수납+거스름돈 허용 | `payment.ts` |
+| 완납 후 이전 고객 세션의 잔여 주문 조작 | 완납 시 `PAID_PENDING_SERVICE`로 전환되어 신규 주문만 차단(조회는 허용), 미서빙 주문까지 끝나면 자동 CLOSE | `requireOrderableSession`, `maybeAutoSettleTableSession()` |
+| 결제/주문 기능 전체 또는 테이블별 오남용 시 긴급 차단 수단 부재 | ADMIN이 전체 주문/결제 기능을 즉시 끌 수 있는 `OperationSettings` 킬스위치 + 테이블별 `ordersLocked`/`paymentsLocked` | `settings.ts`, `Table` 모델 |
 | Audit log tampering | append-only 테이블(UPDATE/DELETE 권한 제거) + 해시체인 | AuditLog 모델 |
+| 백업 파일 경로 조작(path traversal) | 백업 다운로드는 파일명에 `/`, `\`, `..` 포함 시 404, 실제 백업 디렉터리 내 존재 여부 재확인 | `server/src/services/backup.ts` |
 | Public GitHub secret leak | `.env.example`만 커밋, Secret Scanning + Push Protection, CI에 Gitleaks | 저장소 설정(완료) |
 
 ## 2. 인증/세션 설계
@@ -55,8 +60,12 @@
 - [ ] 동일 주문 더블탭 → 1건만 생성
 - [ ] POS 계정으로 `/api/admin/*` 호출 → 403
 - [ ] SERVING 계정으로 결제 생성 API 호출 → 403
-- [ ] 두 FRONT가 동시에 같은 테이블 결제 → 초과결제 없음
-- [ ] 동일 상품 수량 일부만 결제 후 재결제 시도 → 초과분 차단
-- [ ] 로그인 5회 실패 → 계정 잠금
-- [ ] 감사 로그 해시체인 무결성 검증
-- [ ] Public repo에 secret 없음(Gitleaks CI)
+- [x] 두 FRONT가 동시에 같은 테이블 결제 → 초과결제 없음(`payment.test.ts`)
+- [x] 동일 상품 수량 일부만 결제 후 재결제 시도 → 초과분 차단(`payment.test.ts`)
+- [x] 로그인 5회 실패 → 계정 잠금(`login-guard.test.ts`)
+- [x] 감사 로그 해시체인 무결성 검증(`auditLog.test.ts`)
+- [ ] Public repo에 secret 없음(Gitleaks CI) — CI에서 매 push마다 자동 실행 중
+- [x] 결제 취소 이중 취소 방지(`payment.test.ts`)
+- [x] 전체 주문/결제 킬스위치 및 테이블별 잠금 동작(`admin-operations.test.ts`)
+- [x] 완납 후 미서빙 주문 존재 시 PAID_PENDING_SERVICE 전환 및 신규 주문 차단(`payment.test.ts`)
+- [x] 백업 다운로드 경로 조작 차단(`admin-operations.test.ts`)

@@ -61,3 +61,37 @@ export async function createBareTable() {
     data: { number: Math.floor(Math.random() * 1_000_000) + 1, publicSlug: unique("slug") },
   });
 }
+
+// ---- 아래는 Phase 5(결제/정산) 테스트를 위해 추가된 헬퍼 ----
+
+/** HTTP 흐름을 거치지 않고 곧바로 ACTIVE TableSession을 만든다(결제 테스트를 단순화). */
+export async function openTableSessionDirect(tableId: string, staffUsername?: string) {
+  const username = staffUsername ?? (await createStaff("FRONT")).username;
+  const staff = await prisma.staffUser.findUniqueOrThrow({ where: { username } });
+  await prisma.table.update({ where: { id: tableId }, data: { status: "OPEN" } });
+  return prisma.tableSession.create({
+    data: { tableId, token: unique("token"), openedById: staff.id },
+  });
+}
+
+/** 특정 세션에 주문 항목 1개짜리 주문을 직접 생성한다(결제 대상 orderItem을 얻기 위함). */
+export async function createOrderWithItem(
+  tableSessionId: string,
+  menuItemId: string,
+  unitPrice: number,
+  quantity: number,
+  status = "NEW",
+) {
+  const order = await prisma.order.create({
+    data: {
+      tableSessionId,
+      status,
+      idempotencyKey: unique(`order_${tableSessionId}`),
+      items: {
+        create: [{ menuItemId, nameSnapshot: "결제테스트메뉴", unitPrice, quantity }],
+      },
+    },
+    include: { items: true },
+  });
+  return { order, orderItem: order.items[0] };
+}
