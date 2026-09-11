@@ -5,6 +5,61 @@
 
 ---
 
+## 2026-09-11 23:10
+
+**작업자/에이전트:** Claude (메인 개발 에이전트) + 병렬 서브에이전트 2개
+
+**이번 작업 목적:** Phase 3(주방/KDS) 구현. 동시에 서브에이전트로 (1) Phase 2 테스트 커버리지 보강, (2) 고객 화면 UI 디자인 폴리싱 진행.
+
+**사전에 읽은 문서:** AGENTS.md, docs/ARCHITECTURE.md, docs/DEVLOG.md 직전 기록, docs/HANDOFF.md
+
+**작업 방식(서브에이전트 병렬 사용):**
+- 메인 에이전트가 직접 담당: `server/src/services/order.ts`(상태 전이), `server/src/routes/pos.routes.ts`(신규), `server/src/app.ts`, `client/src/pages/pos/*`(신규), `client/src/App.tsx` 라우트 연결, `client/src/lib/useStaffSocket.ts`/`useNow.ts`/`beep.ts`(신규), `server/prisma/seedDemo.ts`(데모 데이터), `server/tests/pos-flow.test.ts`.
+- 서브에이전트 A(테스트 커버리지): `server/tests/{login-guard,billing,table-session,admin-authz}.test.ts` 신규 작성, `server/tests/helpers.ts`에 헬퍼 3개 추가. 지정된 금지 파일(pos.routes.ts/app.ts/order.ts/realtime.ts/socket.ts)은 건드리지 않음.
+- 서브에이전트 B(고객 UI): `client/src/pages/customer/` 아래 컴포넌트 분리(BottomSheet/OptionSheet/CartSheet/OrderStatusTimeline/MenuSkeleton/types.ts), `CustomerApp.tsx` 전면 개선, `styles.css`에 새 클래스만 append. 서버 코드와 AdminHome/FrontHome/App.tsx는 건드리지 않음.
+- 두 서브에이전트가 동시에 `npx vitest run`을 실행하며 공유 SQLite 테스트 DB(`server/prisma/test.db`)가 충돌(readonly/테이블 없음 오류)하는 것을 확인 — **알려진 인프라 한계**로 기록(아래 "발견된 문제" 참고).
+
+**구현 내용(백엔드, Phase 3):**
+- `order.ts`에 상태 머신 함수 추가: `acceptOrder/rejectOrder/startPreparing/markReady/markServed/revertServedToReady/cancelOrder` — 전부 `docs/ARCHITECTURE.md §5.3` 전이 규칙을 강제(`OrderStateError`, 409). 각 전이마다 감사 로그(`ORDER_ACCEPTED` 등, 요구사항.md §14 이벤트명 그대로 사용)와 `RealtimeEvent.OrderStatusChanged` emit.
+- `listOrdersForKitchen()` — NEW/ACCEPTED/PREPARING/READY를 그룹화해 KDS 보드 형태로 반환. `searchOrderHistory()` — 상태/테이블번호로 이력 검색.
+- `pos.routes.ts` 신규: 보드/이력 조회, 상태 전이 5종, POS 권한 범위의 품절 토글(`PATCH /menu-items/:id/sold-out`). 전부 `requireRole('POS')`(ADMIN 겸임 허용).
+- `customer.routes.ts`에 직원 호출 엔드포인트 추가(`GET/POST /api/customer/staff-call`) — 서브에이전트 B가 "백엔드 엔드포인트가 없어 UI를 못 붙였다"고 보고한 것을 반영해 메인 에이전트가 마저 구현. 이미 PENDING/ACKED인 호출이 있으면 중복 생성하지 않음.
+
+**구현 내용(프론트엔드, Phase 3 + 고객 UI 폴리싱):**
+- `/pos`에 실제 KDS 화면 연결(기존 RoleStub 대체): 4컬럼 보드(신규/접수/조리중/준비완료), 경과시간 배지(5분 임박/10분 지연, 색상+텍스트 병행), 거부/취소 사유 선택 모달, 이력/취소/품절처리 탭, Socket.IO(`staff:pos` room) 실시간 갱신 + 신규 주문 알림음(음소거 토글, localStorage 저장).
+- 고객 화면(`CustomerApp.tsx`) 전면 개선: 옵션 선택 바텀시트(필수 그룹 검증, 단일/다중 선택), 장바구니 확인 바텀시트(수량 변경/삭제/합계), 주문 상태 타임라인(단계별 텍스트+아이콘, 거부/취소는 별도 알림 패널), 로딩 스켈레톤, 품절 안내 문구, 44px 이상 터치영역, 해요체/긍정형 카피 전면 적용. Socket.IO로 주문 생성/상태변경/결제/테이블CLOSE 이벤트 구독 + 20초 폴링 안전망.
+- 직원 호출 버튼을 고객 화면 상단에 추가(대기중에는 재호출 방지, 상태 문구 전환).
+- `server/prisma/seedDemo.ts`: 로컬 브라우징 확인용 데모 데이터(카테고리 4개, 메뉴 9개, 옵션그룹 1개, 테이블 3개 — 빈자리/이용중/비활성).
+
+**설계 결정:**
+- KDS 지연 기준(5분 임박/10분 지연)은 우선 클라이언트 상수로 하드코딩. ADMIN 설정으로 옮기는 것은 후속 작업으로 남김(주석에 명시).
+- READY 상태 주문은 취소 불가(요구사항 그대로), SERVED로 잘못 넘어간 건은 `revertServedToReady()`로 되돌릴 수 있게 서비스 함수는 미리 준비(SERVING 화면은 Phase 4에서 연결 예정).
+
+**실행한 테스트:**
+- `cd server && npx vitest run` — **8개 파일, 39개 테스트 전부 통과** (RBAC, 주문 생성/idempotency, POS 상태 전이 8종, 테이블 세션 엣지케이스, 로그인 brute-force, 정산 계산, 관리자 authz, 감사로그 해시체인).
+- 서버/클라이언트 `tsc --noEmit` 클린, `npm run build`(client) 성공.
+- 실행 중인 dev 서버에 대해 curl로 수동 회귀 확인: POS 로그인/보드조회/접수→조리시작→준비완료 정상 전이, 잘못된 순서 전이 409, 거부 사유 누락 400, FRONT 계정의 POS API 호출 403, 이력 검색.
+
+**테스트 결과:** 전부 통과.
+
+**발견된 문제:**
+1. **WSL 파일시스템 감시 이슈**: `/mnt/c/...` 경로에서 `tsx watch`와 Vite dev 서버 모두 파일 저장 후 자동 재시작/HMR이 안 되는 경우가 관찰됨(inotify가 DrvFs 마운트에서 불안정). 코드 변경 후에는 dev 서버를 수동으로 재시작해서 반영을 확인해야 했다. 다음 작업자도 동일 증상을 겪을 수 있으니 참고.
+2. **공유 SQLite 테스트 DB 동시성**: 두 `npx vitest run`을 동시에 실행하면 `globalSetup`이 서로의 `test.db`를 지우면서 "attempt to write a readonly database" 오류가 발생한다. 서브에이전트/사람이 동시에 테스트를 돌리지 않도록 주의(순차 실행 필요). 향후 프로세스별 고유 DB 파일명을 쓰도록 `testDbPath.ts`를 개선하는 것을 고려할 것.
+3. 백그라운드로 띄운 dev 서버(특히 Vite)가 별다른 에러 로그 없이 간헐적으로 종료되는 현상 관찰(리소스 제약/OOM 추정). 운영 배포 시에는 pm2 등 프로세스 매니저로 자동 재시작을 구성해야 한다(README/OPERATIONS.md에 반영 필요, 아직 미반영).
+
+**남은 문제:**
+- Phase 4(SERVING) 미구현 — `/serving`은 여전히 스텁. `markServed`/`revertServedToReady` 서비스 함수는 준비되어 있으므로 라우트+화면만 연결하면 됨.
+- Phase 5(결제/정산) 전체 미구현.
+- KDS 지연 기준(5/10분)이 하드코딩됨 — ADMIN 설정 연동 필요.
+- 직원 호출을 SERVING이 확인(ACK)/완료 처리하는 UI/API 없음(모델과 이벤트는 준비됨).
+
+**다음 작업자가 가장 먼저 할 일:**
+1. 본 DEVLOG를 읽고, dev 서버가 죽어있으면 재시작한다(`cd server && npx dotenv -e ../.env -- npx tsx watch src/index.ts`, `cd client && npx vite --host 0.0.0.0`).
+2. Phase 4(SERVING) 구현: `server/src/routes/serving.routes.ts` 신설(READY 목록 조회, `markServed`/`revertServedToReady` 호출, 직원 호출 ACK/완료 처리), `client/src/pages/serving/ServingHome.tsx` 신설.
+3. 서브에이전트를 다시 활용할 경우, 반드시 `server/prisma/test.db`를 공유하는 `vitest run`을 동시에 두 개 이상 돌리지 않도록 지시할 것(위 "발견된 문제" #2 참고).
+
+**관련 커밋:** (이 작업 직후 커밋 예정)
+
 ## 2026-09-11 22:20
 
 **작업자/에이전트:** Claude (메인 개발 에이전트)

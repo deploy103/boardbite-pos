@@ -2,6 +2,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "../prisma.js";
 import { recordAuditLog } from "./auditLog.js";
 import { appEvents, RealtimeEvent } from "../realtime.js";
+import type { OrderStatus } from "../types/domain.js";
 
 export interface CreateOrderItemInput {
   menuItemId: string;
@@ -127,4 +128,144 @@ export async function createOrder(input: CreateOrderInput) {
     }
     throw err;
   }
+}
+
+// ---------------------------------------------------------------------------
+// 주문 상태 머신 (docs/ARCHITECTURE.md §5.3)
+//
+//   NEW → ACCEPTED → PREPARING → READY → SERVED
+//   NEW → REJECTED
+//   NEW | ACCEPTED | PREPARING → CANCELLED
+//
+// 모든 전이는 감사 로그를 남기고 RealtimeEvent.OrderStatusChanged를 emit한다.
+// ---------------------------------------------------------------------------
+
+export class OrderStateError extends Error {
+  constructor(message: string, public status = 409) {
+    super(message);
+  }
+}
+
+const ORDER_INCLUDE = { items: { include: { options: true } } } as const;
+const ORDER_WITH_TABLE_INCLUDE = {
+  items: { include: { options: true } },
+  tableSession: { include: { table: true } },
+} as const;
+
+async function requireOrder(orderId: string) {
+  const order = await prisma.order.findUnique({ where: { id: orderId }, include: ORDER_INCLUDE });
+  if (!order) throw new OrderStateError("존재하지 않는 주문입니다.", 404);
+  return order;
+}
+
+async function applyTransition(
+  orderId: string,
+  fromStatuses: OrderStatus[],
+  toStatus: OrderStatus,
+  extraData: Prisma.OrderUpdateInput,
+  staffId: string,
+  action: string,
+  metadata?: Record<string, unknown>,
+) {
+  const order = await requireOrder(orderId);
+  if (!fromStatuses.includes(order.status as OrderStatus)) {
+    throw new OrderStateError(`현재 상태(${order.status})에서는 이 작업을 할 수 없어요.`);
+  }
+  const updated = await prisma.order.update({
+    where: { id: orderId },
+    data: { status: toStatus, ...extraData },
+    include: ORDER_INCLUDE,
+  });
+  await recordAuditLog({
+    actorType: "STAFF",
+    actorId: staffId,
+    action,
+    targetType: "Order",
+    targetId: orderId,
+    metadata,
+  });
+  appEvents.emit(RealtimeEvent.OrderStatusChanged, {
+    tableSessionId: updated.tableSessionId,
+    orderId: updated.id,
+    status: updated.status,
+  });
+  return updated;
+}
+
+export function acceptOrder(orderId: string, staffId: string) {
+  return applyTransition(orderId, ["NEW"], "ACCEPTED", { acceptedAt: new Date() }, staffId, "ORDER_ACCEPTED");
+}
+
+export function rejectOrder(orderId: string, staffId: string, reason: string) {
+  return applyTransition(orderId, ["NEW"], "REJECTED", { rejectReason: reason }, staffId, "ORDER_REJECTED", { reason });
+}
+
+export function startPreparing(orderId: string, staffId: string) {
+  return applyTransition(orderId, ["ACCEPTED"], "PREPARING", { preparingAt: new Date() }, staffId, "ORDER_PREPARING");
+}
+
+export function markReady(orderId: string, staffId: string) {
+  return applyTransition(orderId, ["PREPARING"], "READY", { readyAt: new Date() }, staffId, "ORDER_READY");
+}
+
+export function markServed(orderId: string, staffId: string) {
+  return applyTransition(orderId, ["READY"], "SERVED", { servedAt: new Date() }, staffId, "ORDER_SERVED");
+}
+
+/** 잘못 누른 서빙 완료를 되돌린다. 시간 제한/권한 정책은 라우트(SERVING) 레벨에서 강제한다. */
+export function revertServedToReady(orderId: string, staffId: string) {
+  return applyTransition(orderId, ["SERVED"], "READY", { servedAt: null }, staffId, "ORDER_SERVED_REVERTED");
+}
+
+export function cancelOrder(orderId: string, staffId: string, reason: string) {
+  return applyTransition(
+    orderId,
+    ["NEW", "ACCEPTED", "PREPARING"],
+    "CANCELLED",
+    { cancelReason: reason, cancelledAt: new Date() },
+    staffId,
+    "ORDER_CANCELLED",
+    { reason },
+  );
+}
+
+/** KDS 보드용 — 활성 주문(NEW/ACCEPTED/PREPARING/READY)을 상태별로 묶어 반환한다. */
+export async function listOrdersForKitchen() {
+  const orders = await prisma.order.findMany({
+    where: { status: { in: ["NEW", "ACCEPTED", "PREPARING", "READY"] } },
+    orderBy: { createdAt: "asc" },
+    include: ORDER_WITH_TABLE_INCLUDE,
+  });
+
+  const grouped: Record<"NEW" | "ACCEPTED" | "PREPARING" | "READY", typeof orders> = {
+    NEW: [],
+    ACCEPTED: [],
+    PREPARING: [],
+    READY: [],
+  };
+  for (const order of orders) {
+    grouped[order.status as "NEW" | "ACCEPTED" | "PREPARING" | "READY"]?.push(order);
+  }
+  return grouped;
+}
+
+export interface OrderHistoryFilter {
+  status?: OrderStatus;
+  tableNumber?: number;
+  limit?: number;
+}
+
+/** 이전 주문 이력/취소 목록 검색(POS "이력"/"취소" 탭). */
+export async function searchOrderHistory(filter: OrderHistoryFilter) {
+  const where: Prisma.OrderWhereInput = {};
+  if (filter.status) where.status = filter.status;
+  if (filter.tableNumber) {
+    where.tableSession = { table: { number: filter.tableNumber } };
+  }
+  return prisma.order.findMany({
+    where,
+    orderBy: { createdAt: "desc" },
+    take: Math.min(filter.limit ?? 50, 200),
+    include: ORDER_WITH_TABLE_INCLUDE,
+  });
 }
