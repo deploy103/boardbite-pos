@@ -25,9 +25,17 @@
 | 비현금 결제 초과수납 | 카드/기타 결제는 남은 금액을 초과하면 400. 오직 현금(`PaymentMethod.isCash`)만 초과 수납+거스름돈 허용 | `payment.ts` |
 | 완납 후 이전 고객 세션의 잔여 주문 조작 | 완납 시 `PAID_PENDING_SERVICE`로 전환되어 신규 주문만 차단(조회는 허용), 미서빙 주문까지 끝나면 자동 CLOSE | `requireOrderableSession`, `maybeAutoSettleTableSession()` |
 | 결제/주문 기능 전체 또는 테이블별 오남용 시 긴급 차단 수단 부재 | ADMIN이 전체 주문/결제 기능을 즉시 끌 수 있는 `OperationSettings` 킬스위치 + 테이블별 `ordersLocked`/`paymentsLocked` | `settings.ts`, `Table` 모델 |
-| Audit log tampering | append-only 테이블(UPDATE/DELETE 권한 제거) + 해시체인 | AuditLog 모델 |
+| Audit log tampering | 코드 레벨에서 AuditLog에 대한 update 호출을 전혀 만들지 않음(append-only 컨벤션) + 해시체인. ADMIN의 명시적 "로그 정리" 삭제만 예외적으로 허용되며, 그 삭제 행위 자체가 `AUDIT_LOG_PURGE` 레코드로 영구히 남는다(이 레코드 자신은 어떤 정리 요청으로도 삭제되지 않음) | `services/auditLog.ts`(`purgeAuditLogs`, `verifyAuditLogChain`) |
 | 백업 파일 경로 조작(path traversal) | 백업 다운로드는 파일명에 `/`, `\`, `..` 포함 시 404, 실제 백업 디렉터리 내 존재 여부 재확인 | `server/src/services/backup.ts` |
 | Public GitHub secret leak | `.env.example`만 커밋, Secret Scanning + Push Protection, CI에 Gitleaks | 저장소 설정(완료) |
+
+### 1.1 감사 로그 정리(purge) 기능의 트레이드오프
+
+요구사항.md §13.5는 ADMIN이 감사 로그를 정리(삭제)할 수 있어야 한다고 명시한다. 이는 "완전한 append-only"라는 이상과 정면으로 충돌하므로, 다음과 같이 명확한 트레이드오프를 두고 구현했다.
+
+- `AUDIT_LOG_PURGE` 레코드 자신은 **어떤 정리 요청으로도 삭제되지 않는다** — "언제, 누가, 몇 건을 정리했는지"는 영구히 남는다.
+- 정리로 인해 삭제된 구간의 앞뒤로 남은 레코드는 "정상적인 연결 끊김"으로 처리되어 해시체인 검증에서 변조로 오탐되지 않는다(`verifyAuditLogChain()`이 `AUDIT_LOG_PURGE` 레코드로 이어지는 링크만 예외적으로 검증을 면제).
+- **받아들이는 위험**: 정리 기능 자체가 이미 ADMIN 인증을 요구하므로, "정리 시점 직전 구간이 실제로 정리된 것인지, 혹은 그 시점에 맞춰 몰래 변조된 것인지"는 해시체인만으로는 구분할 수 없다. 이는 삭제 자체를 제공하는 모든 감사 로그 시스템이 공통으로 갖는 한계이며, 완전한 무결성 증명이 필요한 운영이라면 정리 기능을 아예 쓰지 않으면 된다(CSV로 내보낸 뒤 원본은 보존).
 
 ## 2. 인증/세션 설계
 

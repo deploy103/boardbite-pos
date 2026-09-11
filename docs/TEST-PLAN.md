@@ -33,8 +33,9 @@
 | 운영 설정 킬스위치/테이블 잠금 | 통합 | `요구사항.md` §19 | ✅ `admin-operations.test.ts` |
 | 서빙완료 되돌리기 시간 제한 | 통합 | `요구사항.md` §2.4 | ✅ `serving-flow.test.ts` |
 | DB 백업 생성/다운로드/경로조작 방지 | 통합 | `요구사항.md` §13 | ✅ `admin-operations.test.ts` |
+| 감사 로그 정리(purge) 및 정리 후 해시체인 정상 판정 | 통합 | `요구사항.md` §13.5 | ✅ `audit-log-purge.test.ts` |
 
-**서버 자동 테스트 현황(2026-09-11 기준): 12개 파일 / 85개 테스트, 전부 통과.** `cd server && npx vitest run`으로 재현.
+**서버 자동 테스트 현황(2026-09-12 기준): 13개 파일 / 90개 테스트, 전부 통과.** `cd server && npx vitest run`으로 재현.
 
 ## 3. E2E 시나리오 (Playwright, `요구사항.md` §21 기준)
 
