@@ -1,0 +1,42 @@
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+build/
+.next/
+out/
+coverage/
+
+# Database / local data
+*.sqlite
+*.sqlite3
+*.db
+/data/
+/prisma/dev.db*
+
+# Backups
+/backups/
+*.dump
+*.bak
+
+# Logs
+*.log
+npm-debug.log*
+logs/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Test artifacts
+/test-results/
+/playwright-report/
