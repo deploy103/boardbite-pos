@@ -4,7 +4,7 @@ title = "BoardBite POS gitleaks config"
 [extend]
 useDefault = true
 
-[[allowlist]]
+[allowlist]
 description = """
 e2e/ 아래의 계정 문자열은 Playwright E2E 테스트 전용 더미 자격증명이다.
 매 CI 실행마다 새로 만들어지는 격리된 SQLite DB(server/prisma/e2e.db, .gitignore 처리됨)에만
