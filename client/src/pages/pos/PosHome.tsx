@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError } from "../../lib/api.js";
 import { useStaffMe } from "../../lib/useStaffMe.js";
 import { useStaffSocket } from "../../lib/useStaffSocket.js";
+import { useOperationSettings } from "../../lib/useOperationSettings.js";
 import { playBeep } from "../../lib/beep.js";
 import OrderCard, { type KdsOrder } from "./OrderCard.js";
 import ReasonModal from "./ReasonModal.js";
@@ -28,6 +29,7 @@ const STATUS_LABEL: Record<string, string> = {
 
 export default function PosHome() {
   const { me } = useStaffMe("POS");
+  const { settings } = useOperationSettings();
   const [tab, setTab] = useState<Tab>("board");
   const [board, setBoard] = useState<Board>({ NEW: [], ACCEPTED: [], PREPARING: [], READY: [] });
   const [muted, setMuted] = useState(() => localStorage.getItem("boardbite_pos_muted") === "1");
@@ -126,6 +128,8 @@ export default function PosHome() {
                 <OrderCard
                   key={order.id}
                   order={order}
+                  warnAfterSeconds={settings.kdsWarnAfterSeconds}
+                  dangerAfterSeconds={settings.kdsDangerAfterSeconds}
                   actions={
                     <>
                       {status === "NEW" && (

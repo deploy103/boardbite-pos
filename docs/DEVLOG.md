@@ -5,6 +5,77 @@
 
 ---
 
+## 2026-09-12 00:10
+
+**작업자/에이전트:** Claude (메인 개발 에이전트) + 병렬 서브에이전트 5개(2팀으로 순차 투입)
+
+**이번 작업 목적:** Phase 4(SERVING) + Phase 5(결제/정산) 전체 구현, Phase 6(ADMIN 고도화)의 상당 부분(결제수단/운영설정/매출현황/결제내역/DB백업/CSV 내보내기)을 함께 진행. "하드코딩 없이, 컴포넌트를 충분히 분리하고, 실제 서비스 수준으로" 개발하라는 사용자 지시에 따라 진행.
+
+**사전에 읽은 문서:** AGENTS.md, docs/ARCHITECTURE.md, docs/RESEARCH.md(Agent E), docs/DEVLOG.md 직전 기록, docs/HANDOFF.md
+
+**작업 방식**: 백엔드(스키마/서비스/라우트/동시성 설계/자동테스트)는 메인 에이전트가 전부 직접 작성 — 돈이 걸린 로직이라 서브에이전트에 위임하지 않고 직접 검증했다. 백엔드 계약이 안정화된 뒤, 프론트엔드 UI 3영역(FRONT 정산화면/SERVING화면/ADMIN 확장)을 서로 겹치지 않는 파일 범위로 나눠 병렬 서브에이전트 3개에 위임했다.
+
+### 백엔드(메인 에이전트 직접 구현)
+
+**스키마 확장** (`server/prisma/schema.prisma`, 마이그레이션 `20260911132320_payments_settings`):
+- `Table`에 `ordersLocked`/`paymentsLocked` 추가(테이블별 주문/결제 잠금 분리).
+- `TableSession.status`에 `PAID_PENDING_SERVICE` 상태 추가(완납했지만 미서빙 주문이 남은 상태).
+- `Payment`에 `tenderedAmount`/`changeAmount` 추가(현금 받은금액/거스름돈), `kind`에 `DISCOUNT` 추가.
+- 신규 모델: `PaymentMethod`(결제수단, CASH/CARD/OTHER 기본 + ADMIN 커스텀 추가 가능), `OperationSettings`(싱글턴, 전체 주문/결제 킬스위치 + KDS 지연기준 + 서빙되돌리기 허용시간 — **"하드코딩 금지" 지시를 반영해 원래 클라이언트에 상수로 박아뒀던 KDS 임박/지연 기준(Phase 3에서 5분/10분 하드코딩)을 이 설정으로 이전**하고 `client/src/lib/useOperationSettings.ts`로 어디서든 읽게 만듦).
+
+**동시성 설계 — `docs/adr/0005-sqlite-write-concurrency.md` 신규 작성**: `docs/RESEARCH.md` Agent E가 제안한 "SELECT ... FOR UPDATE"는 SQLite가 지원하지 않는다는 사실을 마이그레이션 중 재확인하고, 대신 Prisma 커넥션 풀을 `connection_limit=1`로 고정해 애플리케이션 레벨에서 모든 트랜잭션을 완전 직렬화하는 방식으로 결정. `.env.example`/`.env`/`server/tests/testDbPath.ts`의 `DATABASE_URL`에 전부 반영.
+
+**서비스 계층**:
+- `server/src/services/payment.ts`(신규) — 결제 생성(AMOUNT/ITEMS 모드), 할인, 취소(VOID/REFUND 자동 구분)의 핵심 엔진. 현금은 `tenderedAmount`만 받아 서버가 `applied=min(tendered,remaining)`/`change`를 계산. 상품별 결제는 `PaymentAllocation` 집계로 "이미 결제된 수량"을 매번 재검증.
+- `server/src/services/billing.ts` 확장 — `computeBill()`에 `discountAmount`/`chargedAmount` 분리 계산 추가(할인은 미수금은 줄이지만 매출 집계에서는 제외), `computeItemPaymentStatus()`(항목별 결제 현황) 신규, 트랜잭션 클라이언트를 받을 수 있도록 시그니처 확장(`Db` 타입).
+- `server/src/services/tableSession.ts` 확장 — `maybeAutoSettleTableSession()` 신규(완납+미서빙없음→CLOSE, 완납+미서빙있음→PAID_PENDING_SERVICE, 취소 등으로 미수금 재발생 시 ACTIVE로 복귀). `order.ts`의 `markServed`/`rejectOrder`/`cancelOrder`에서 이 함수를 호출하도록 연결.
+- `server/src/services/splitEvenly.ts`(신규) — 더치페이 최대 나머지법 분배 알고리즘, 순수 함수로 분리.
+- `server/src/services/settings.ts`, `reporting.ts`(매출 요약), `backup.ts`(SQLite 파일 스냅샷), `csv.ts`(신규) — ADMIN 고도화용.
+
+**라우트**:
+- `server/src/routes/serving.routes.ts`(신규, Phase 4): READY 목록/최근서빙완료, 서빙완료/되돌리기(시간창 정책), 직원호출 ack/done.
+- `server/src/routes/front.routes.ts` 대폭 확장(Phase 5): `/checkout`(정산화면 종합 데이터), `/split-suggestion`, `/payments`(생성), `/discount`, `/payments/:id/void`, `/payment-methods`(읽기전용).
+- `server/src/routes/admin.routes.ts` 확장(Phase 6 일부): 결제수단 CRUD, 결제 내역 검색, 매출 현황, 운영 설정 CRUD, DB 백업 생성/목록/다운로드, CSV 내보내기(매출/감사로그).
+- `server/src/routes/customer.routes.ts`/`middleware/requireTableSession.ts` 수정 — `PAID_PENDING_SERVICE`/`SETTLING` 상태에서도 조회는 허용하되 신규 주문만 `requireOrderableSession`(전체 주문잠금/테이블 주문잠금/세션 상태를 모두 검사)으로 차단.
+- `server/src/routes/auth.routes.ts`에 `GET /api/staff/settings` 추가(모든 로그인 사용자가 조회 가능, 민감정보 아님).
+
+**발견하고 고친 버그**: `createPayment()`의 idempotency 사전조회가 트랜잭션 밖에서 이루어져, 동시에 동일 idempotencyKey로 두 요청이 들어오면 P2002 unique constraint 에러가 그대로 터지는 문제를 자동 동시성 테스트(`payment.test.ts`)로 발견 — `order.ts`의 기존 패턴과 동일하게 P2002를 캐치해 기존 레코드를 반환하도록 수정.
+
+### 프론트엔드(병렬 서브에이전트 3개, 파일 범위 분리로 충돌 방지)
+
+- **FRONT 정산화면** (`client/src/pages/front/`): `CheckoutPage.tsx` + `AmountPaymentPanel`/`DutchSplitPanel`/`ItemSplitPanel`/`PaymentMethodPicker`/`CashQuickAmount`/`PaymentHistoryList`/`VoidReasonModal`/`DiscountModal`/`types.ts`/`format.ts`로 세분화. `FrontHome.tsx`에 "정산" 버튼 추가.
+- **SERVING 화면** (`client/src/pages/serving/`): `ServingHome.tsx` + `ReadyOrderCard`/`RecentlyServedCard`/`StaffCallPanel`/`util.ts`.
+- **ADMIN 확장** (`client/src/pages/admin/`): `SettingsPanel`/`PaymentMethodsPanel`/`PaymentsPanel`/`RevenuePanel`(+ 공용 `shared.ts`), `AdminHome.tsx`에 탭 4개 추가 + 기존 `TablesPanel`에 잠금 토글 추가.
+
+**설계 결정**: 부분결제/복합결제/더치페이/상품별결제를 API 하나(`POST .../payments`, `mode: AMOUNT|ITEMS`)로 통합. 더치페이는 별도 엔드포인트 없이 "제안 금액 계산"(`split-suggestion`)만 서버가 하고 실제 결제는 각자 AMOUNT 모드로 개별 실행 — `docs/RESEARCH.md` Agent E의 "계산 결과가 아니라 실제 결제 레코드가 진실"을 그대로 반영.
+
+**실행한 테스트**:
+- 신규 자동 테스트 파일 4개 추가: `payment.test.ts`(20개), `serving-flow.test.ts`(7개), `splitEvenly.test.ts`(6개), `admin-operations.test.ts`(13개).
+- **`cd server && npx vitest run` — 12개 파일 / 85개 테스트 전부 통과.**
+- 서버/클라이언트 `tsc --noEmit` 클린, `npm run build`(client, 103 모듈) 성공.
+- 실행 중인 dev 서버에 대해 curl로 전체 E2E 수동 회귀: 테이블 오픈 → 주문 → POS 접수/조리/준비완료 → SERVING 서빙완료 → FRONT 현금부분결제+상품별결제+할인 적용 → 잔액 0 → PAID_PENDING_SERVICE 전환 확인 → 서빙완료 시 자동 CLOSE 확인 → ADMIN 매출현황/설정/결제수단 조회까지 실제 HTTP로 검증 완료.
+
+**발견된 문제(전부 수정 완료)**:
+1. 위의 결제 idempotency 동시성 버그.
+2. `server/prisma/dev.db-journal`이 `.gitignore`에서 누락되어 있었음(`*.db`는 `.db`로 끝나는 파일만 매치, `-journal` 접미사는 별도 패턴 필요) — `.gitignore`에 `*.db-journal`/`*.db-wal`/`*.db-shm` 추가.
+3. 로컬 dev DB에 이전 세션에서 강제종료된 프로세스가 남긴 미정리 journal 파일이 있어, 데이터 정합성 우려로 로컬 dev.db를 삭제 후 마이그레이션+시드+데모데이터로 재생성(운영 데이터 아님, 손실 없음).
+4. WSL 환경에서 dev 서버(tsx watch/vite)가 파일 변경 감지 실패 또는 간헐적 프로세스 종료를 반복 — 매번 수동 재시작으로 대응. 프로세스 생존 확인은 `ps`/`ss` 조합으로, curl 실패 한 번만으로 죽었다고 단정하지 말 것(재확인 결과 몇 차례는 오탐).
+
+**남은 문제**:
+- Phase 6 나머지(사용자 관리 고도화는 이미 있음, 필요하면 결제수단 정렬순서 UI 등 세부 편의기능)는 후속.
+- 매출 리포트의 `since` 필터는 시작일만 지원(종료일 없음) — 필요시 추가.
+- Playwright E2E(브라우저 자동화)는 아직 미도입 — 지금까지는 Vitest+Supertest 통합테스트와 수동 curl 회귀로 대체.
+- 실기기(iPhone/Android/iPad) 테스트 미실시.
+- `npm audit` moderate 취약점(react-router-dom, express→qs) 보류 중.
+
+**다음 작업자가 가장 먼저 할 일**:
+1. 본 DEVLOG와 `docs/ARCHITECTURE.md` §5~§8, `docs/adr/0005-sqlite-write-concurrency.md`를 읽는다.
+2. 브라우저로 직접 `/front/checkout/:id`, `/serving`, `/admin`의 새 탭들을 열어 시각적 디자인을 다듬는다(현재는 기능 중심 1차 구현).
+3. Playwright E2E 도입 검토(`docs/TEST-PLAN.md` §3의 시나리오 A~J를 자동화).
+4. Phase 7(안정화): 실기기 테스트, `docs/OPERATIONS.md` 작성.
+
+**관련 커밋:** (이 작업 직후 커밋 예정)
+
 ## 2026-09-11 23:10
 
 **작업자/에이전트:** Claude (메인 개발 에이전트) + 병렬 서브에이전트 2개

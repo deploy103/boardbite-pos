@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { api, ApiError } from "../lib/api.js";
 import { useStaffMe } from "../lib/useStaffMe.js";
 
@@ -112,6 +113,15 @@ export default function FrontHome() {
                   </button>
                 )}
               </>
+            )}
+            {(t.status === "OPEN" || t.status === "SETTLING") && t.session && (
+              <Link
+                to={`/front/checkout/${t.session.id}`}
+                className="btn-primary"
+                style={{ marginTop: 8, display: "block", textAlign: "center", textDecoration: "none" }}
+              >
+                정산
+              </Link>
             )}
             {t.status === "OPEN" && (
               <button className="btn-secondary" style={{ marginTop: 8 }} onClick={() => handleClose(t.id)}>

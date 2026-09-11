@@ -2,7 +2,7 @@
 
 학교 반 부스에서 운영하는 보드게임 카페형 행사를 위한 **테이블오더 + KDS(주방) + POS + 정산** 통합 시스템.
 
-> 이 프로젝트는 현재 Phase 2(핵심 기반) 구현이 완료된 상태입니다. 진행 상황은 [`docs/DEVLOG.md`](docs/DEVLOG.md)와 [`docs/HANDOFF.md`](docs/HANDOFF.md)에서 확인할 수 있습니다.
+> 인증/RBAC/테이블/메뉴/주문(Phase 2), 주방 KDS(Phase 3), 서빙(Phase 4), 부분/복합/더치/상품별 결제와 정산(Phase 5), 결제수단·운영설정·매출현황·백업 등 관리자 고도화(Phase 6)까지 구현되어 있습니다. 남은 것은 안정화(Phase 7: 실기기 테스트, E2E 자동화, 운영 매뉴얼)입니다. 진행 상황은 [`docs/DEVLOG.md`](docs/DEVLOG.md)와 [`docs/HANDOFF.md`](docs/HANDOFF.md)에서 확인할 수 있습니다.
 
 ## 운영 흐름 요약
 
@@ -40,6 +40,8 @@ npm install
 # 환경변수 준비
 cp .env.example .env
 # .env를 열어 ADMINID/ADMINPASSWORD 등 값과 SESSION_SECRET을 실제 값으로 채운다.
+# DATABASE_URL은 반드시 ?connection_limit=1을 포함해야 한다 — 결제 동시성 제어의 핵심 전제다.
+# (이유: docs/adr/0005-sqlite-write-concurrency.md)
 
 # 최초 1회: DB 마이그레이션 + 부트스트랩 계정 시드
 npm run prisma:migrate --workspace server

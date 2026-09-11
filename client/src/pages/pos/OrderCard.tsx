@@ -1,9 +1,6 @@
 import type { ReactNode } from "react";
 import { useNow } from "../../lib/useNow.js";
 
-const WARN_MS = 5 * 60 * 1000; // 5분 — 임박 (추후 ADMIN 설정으로 이동 예정)
-const DANGER_MS = 10 * 60 * 1000; // 10분 — 지연
-
 export interface KdsOrder {
   id: string;
   status: string;
@@ -25,10 +22,20 @@ function formatElapsed(ms: number) {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
-export default function OrderCard({ order, actions }: { order: KdsOrder; actions: ReactNode }) {
+export default function OrderCard({
+  order,
+  actions,
+  warnAfterSeconds,
+  dangerAfterSeconds,
+}: {
+  order: KdsOrder;
+  actions: ReactNode;
+  warnAfterSeconds: number;
+  dangerAfterSeconds: number;
+}) {
   const now = useNow(1000);
   const elapsedMs = now - new Date(order.createdAt).getTime();
-  const level = elapsedMs >= DANGER_MS ? "danger" : elapsedMs >= WARN_MS ? "warn" : "normal";
+  const level = elapsedMs >= dangerAfterSeconds * 1000 ? "danger" : elapsedMs >= warnAfterSeconds * 1000 ? "warn" : "normal";
 
   return (
     <div className={`kds-card ${level === "danger" ? "kds-card--danger" : level === "warn" ? "kds-card--warn" : ""}`}>

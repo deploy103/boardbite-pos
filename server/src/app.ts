@@ -13,6 +13,7 @@ import { customerRouter } from "./routes/customer.routes.js";
 import { frontRouter } from "./routes/front.routes.js";
 import { adminRouter } from "./routes/admin.routes.js";
 import { posRouter } from "./routes/pos.routes.js";
+import { servingRouter } from "./routes/serving.routes.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const clientDist = path.resolve(__dirname, "../../client/dist");
@@ -70,6 +71,7 @@ export function createApp() {
   app.use("/api/staff/front", frontRouter);
   app.use("/api/staff/admin", adminRouter);
   app.use("/api/staff/pos", posRouter);
+  app.use("/api/staff/serving", servingRouter);
 
   app.use(express.static(clientDist));
   app.get(/^(?!\/api).*/, (_req, res) => {

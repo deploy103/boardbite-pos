@@ -15,6 +15,8 @@ declare global {
         id: string;
         tableId: string;
         tableNumber: number;
+        sessionStatus: "ACTIVE" | "PAID_PENDING_SERVICE";
+        tableOrdersLocked: boolean;
       };
     }
   }

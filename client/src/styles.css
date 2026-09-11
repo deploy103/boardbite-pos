@@ -832,3 +832,429 @@ h1 {
   width: auto;
   min-height: 44px;
 }
+
+/* ---------------------------------------------------------------------- */
+/* SERVING 화면 전용 (docs/RESEARCH.md Agent B 종합 제안 — READY/SERVED 구분,
+   대기 지연 강조 원칙 참고). 기존 클래스는 그대로 두고 새 클래스만 추가한다. */
+/* ---------------------------------------------------------------------- */
+
+.serving-section {
+  margin-bottom: var(--space-4);
+  padding: var(--space-3);
+  background: var(--color-bg-alt);
+  border-radius: var(--radius-md);
+}
+
+.serving-section-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.serving-section-header h2 {
+  font-size: 1rem;
+  font-weight: 700;
+  margin: 0;
+}
+
+.serving-call-row {
+  background: #fff;
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-2);
+}
+
+.serving-tabs {
+  display: flex;
+  gap: var(--space-2);
+  margin: var(--space-4) 0;
+}
+
+.serving-tabs button {
+  width: auto;
+  flex: 1;
+}
+
+.serving-table-group {
+  margin-bottom: var(--space-4);
+}
+
+.serving-table-group-title {
+  font-size: 1rem;
+  font-weight: 700;
+  margin: 0 0 var(--space-2);
+  color: var(--color-text-muted);
+}
+
+.serving-revert-expired {
+  margin-top: var(--space-2);
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+}
+
+/* ---------------------------------------------------------------------- */
+/* ADMIN 매출 현황 대시보드 전용. 기존 클래스는 그대로 두고 새 클래스만 추가한다. */
+/* ---------------------------------------------------------------------- */
+
+.revenue-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+}
+
+.revenue-stat {
+  background: var(--color-bg-alt);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+}
+
+.revenue-stat__value {
+  font-size: 1.5rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.revenue-stat__label {
+  margin-top: var(--space-1);
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+}
+
+.revenue-bar-row {
+  display: grid;
+  grid-template-columns: minmax(80px, 160px) 1fr auto;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+}
+
+.revenue-bar-row__label {
+  font-size: 0.9rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.revenue-bar-track {
+  background: var(--color-bg-alt);
+  border-radius: 999px;
+  height: 12px;
+  overflow: hidden;
+}
+
+.revenue-bar-fill {
+  background: var(--color-point);
+  height: 100%;
+  border-radius: 999px;
+}
+
+.revenue-bar-row__value {
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------------- */
+/* FRONT 정산 화면(/front/checkout/:tableSessionId) 전용 — 요구사항.md §12,
+   docs/RESEARCH.md Agent A/E/C 종합 제안 참고. 기존 클래스는 그대로 두고 새 클래스만 추가한다. */
+/* ---------------------------------------------------------------------- */
+
+.checkout-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.checkout-notice {
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  background: #fff4e0;
+  color: #b96b00;
+  font-size: 0.9rem;
+  font-weight: 600;
+  margin-bottom: var(--space-3);
+}
+
+.checkout-refund-banner {
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--color-danger);
+  color: #fff;
+  font-size: 1.05rem;
+  font-weight: 700;
+  text-align: center;
+  margin-bottom: var(--space-3);
+}
+
+.checkout-discount-btn {
+  width: auto;
+  margin: var(--space-2) 0 var(--space-4);
+}
+
+.checkout-section-title {
+  font-size: 1.1rem;
+  margin: var(--space-6) 0 var(--space-2);
+}
+
+.checkout-panel {
+  margin-top: var(--space-2);
+}
+
+.checkout-submit-btn {
+  margin-top: var(--space-4);
+}
+
+.checkout-field-label {
+  display: block;
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+  margin-bottom: var(--space-2);
+}
+
+/* 결제수단 선택 */
+.checkout-method-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.checkout-method-btn {
+  min-height: 44px;
+  padding: 0 var(--space-4);
+  border: 1px solid var(--color-bg-alt);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-alt);
+  color: var(--color-text);
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.checkout-method-btn[aria-current="true"] {
+  background: var(--color-point);
+  border-color: var(--color-point);
+  color: #fff;
+}
+
+/* 현금 받은금액/거스름돈 */
+.checkout-cash-panel {
+  margin-bottom: var(--space-3);
+}
+
+.checkout-quick-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.checkout-quick-row button {
+  width: auto;
+  min-height: 44px;
+  padding: 0 var(--space-2);
+  font-size: 0.85rem;
+}
+
+.checkout-cash-summary {
+  margin-top: var(--space-3);
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-alt);
+}
+
+.checkout-cash-summary__row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: var(--space-1) 0;
+  font-size: 1rem;
+}
+
+.checkout-cash-summary__row--change strong {
+  color: var(--color-point);
+  font-size: 1.25rem;
+}
+
+/* 더치페이 */
+.checkout-dutch-input-row {
+  display: flex;
+  gap: var(--space-2);
+  align-items: flex-start;
+}
+
+.checkout-dutch-input {
+  max-width: 120px;
+  margin-bottom: 0;
+}
+
+.checkout-dutch-input-row button {
+  width: auto;
+  min-height: 44px;
+  padding: 0 var(--space-4);
+}
+
+.checkout-dutch-list {
+  list-style: none;
+  margin: var(--space-4) 0 0;
+  padding: 0;
+}
+
+.checkout-dutch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--color-bg-alt);
+}
+
+.checkout-dutch-row--paid {
+  opacity: 0.6;
+}
+
+.checkout-dutch-row__label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 1rem;
+}
+
+.checkout-dutch-row__label span {
+  font-weight: 700;
+  font-size: 1.1rem;
+}
+
+.checkout-dutch-form {
+  flex: 1 0 100%;
+  margin-top: var(--space-2);
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-alt);
+}
+
+.checkout-dutch-form__actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.checkout-dutch-form__actions button {
+  flex: 1;
+}
+
+/* 상품별 결제 */
+.checkout-item-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.checkout-item-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--color-bg-alt);
+}
+
+.checkout-item-row--disabled {
+  opacity: 0.5;
+}
+
+.checkout-item-row__name {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.checkout-item-total {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-bg-alt);
+  font-size: 1.1rem;
+  font-weight: 700;
+}
+
+/* 결제 내역 */
+.checkout-history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.checkout-history-row {
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--color-bg-alt);
+}
+
+.checkout-history-row--reversal {
+  background: #fdecec;
+}
+
+.checkout-history-row__main {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.checkout-history-row__method {
+  font-size: 0.9rem;
+  color: var(--color-text-muted);
+}
+
+.checkout-history-row__amount {
+  margin-left: auto;
+  font-size: 1.05rem;
+}
+
+.checkout-history-row__meta {
+  margin-top: var(--space-1);
+  font-size: 0.8rem;
+}
+
+.checkout-history-row__void {
+  width: auto;
+  min-height: 36px;
+  margin-top: var(--space-2);
+  padding: 0 var(--space-3);
+  font-size: 0.8rem;
+  color: var(--color-danger);
+}
+
+/* 완납/자동 CLOSE 안내 오버레이 */
+.checkout-closed-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 18, 22, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+}
+
+.checkout-closed-card {
+  background: #fff;
+  border-radius: var(--radius-lg);
+  padding: var(--space-8) var(--space-6);
+  max-width: 360px;
+  width: 100%;
+  text-align: center;
+}
+
+.checkout-closed-card h2 {
+  margin: 0 0 var(--space-2);
+  color: var(--color-point);
+}
+
+.checkout-closed-card .btn-primary {
+  margin-top: var(--space-4);
+}

@@ -5,6 +5,8 @@ import { verifyPassword } from "../auth/password.js";
 import { assertLoginAllowed, recordLoginAttempt } from "../auth/loginGuard.js";
 import { recordAuditLog } from "../services/auditLog.js";
 import { asStaffRole } from "../types/domain.js";
+import { requireStaff } from "../middleware/requireRole.js";
+import { getSettings } from "../services/settings.js";
 
 export const authRouter = Router();
 
@@ -114,4 +116,11 @@ authRouter.get("/me", async (req, res) => {
     role: user.role,
     mustResetPassword: user.mustResetPassword,
   });
+});
+
+// 모든 직원 화면(POS/FRONT/SERVING/ADMIN)이 공통으로 참조하는 운영 설정 — 민감정보가 없으므로 role 제한 없이 공개한다.
+// 값을 바꾸는 PATCH는 admin.routes.ts에서 ADMIN 전용으로만 허용한다.
+authRouter.get("/settings", requireStaff, async (_req, res) => {
+  const settings = await getSettings();
+  res.json({ settings });
 });

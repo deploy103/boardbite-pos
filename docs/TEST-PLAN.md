@@ -11,24 +11,30 @@
 
 ## 2. 필수 자동 테스트 대상
 
-| 대상 | 테스트 유형 | 근거 |
-|---|---|---|
-| RBAC 우회 방지 (POS→admin API, SERVING→결제 API) | 통합 | `docs/SECURITY.md` §1 |
-| 테이블 OPEN/CLOSE, CLOSED 주문 차단 | 통합 | `요구사항.md` §4.4 |
-| 가격/수량 위변조 무시 | 통합 | `docs/SECURITY.md` §1 |
-| 주문 idempotency(중복 방지) | 통합 + 동시성 | `docs/ARCHITECTURE.md` §8 |
-| 주문 상태 전이(허용/불허 전이) | 단위 | `docs/ARCHITECTURE.md` §5.3 |
-| 미수금 계산(Payment/PaymentAllocation 집계) | 단위 | `docs/RESEARCH.md` Agent E |
-| 현금 거스름돈 계산 | 단위 | `요구사항.md` §12.2 |
-| 부분/복합/더치/상품별 결제 | 통합 | `요구사항.md` §12.3~12.6 |
-| 동일 상품 수량 일부 결제 | 통합 | `docs/ARCHITECTURE.md` §4 |
-| 초과결제 차단 | 통합 + 동시성 | `docs/SECURITY.md` §1 |
-| 결제 취소/환불 및 감사 로그 | 통합 | `요구사항.md` §12.8 |
-| 자동 CLOSE, 이전 고객 세션 폐기 | 통합 | `요구사항.md` §4.4, §12.9 |
-| 사용자 역할 변경 | 통합 | `요구사항.md` §13.1 |
-| 동시 결제(레이스 컨디션) | 동시성 | `docs/RESEARCH.md` Agent E |
-| 감사 로그 해시체인 무결성 | 단위 | `docs/SECURITY.md` §1 |
-| 더치페이 나머지(원 단위) 정확 분배 | 단위 | `docs/RESEARCH.md` Agent E |
+| 대상 | 테스트 유형 | 근거 | 상태 |
+|---|---|---|---|
+| RBAC 우회 방지 (POS→admin API, SERVING→결제 API) | 통합 | `docs/SECURITY.md` §1 | ✅ `rbac.test.ts`, `pos-flow.test.ts`, `serving-flow.test.ts` |
+| 테이블 OPEN/CLOSE, CLOSED 주문 차단 | 통합 | `요구사항.md` §4.4 | ✅ `table-session.test.ts`, `order-flow.test.ts` |
+| 가격/수량 위변조 무시 | 통합 | `docs/SECURITY.md` §1 | ✅ `order-flow.test.ts` |
+| 주문 idempotency(중복 방지) | 통합 + 동시성 | `docs/ARCHITECTURE.md` §8 | ✅ `order-flow.test.ts` |
+| 주문 상태 전이(허용/불허 전이) | 단위 | `docs/ARCHITECTURE.md` §5.3 | ✅ `pos-flow.test.ts` |
+| 미수금 계산(Payment/PaymentAllocation 집계) | 단위 | `docs/RESEARCH.md` Agent E | ✅ `billing.test.ts` |
+| 현금 거스름돈 계산 | 단위 | `요구사항.md` §12.2 | ✅ `payment.test.ts` |
+| 부분/복합/더치/상품별 결제 | 통합 | `요구사항.md` §12.3~12.6 | ✅ `payment.test.ts`(부분/상품별/할인), `splitEvenly.test.ts`(더치 배분 로직) |
+| 동일 상품 수량 일부 결제 | 통합 | `docs/ARCHITECTURE.md` §4 | ✅ `payment.test.ts` |
+| 초과결제 차단 | 통합 + 동시성 | `docs/SECURITY.md` §1 | ✅ `payment.test.ts` |
+| 결제 취소/환불 및 감사 로그 | 통합 | `요구사항.md` §12.8 | ✅ `payment.test.ts` |
+| 자동 CLOSE, 이전 고객 세션 폐기 | 통합 | `요구사항.md` §4.4, §12.9 | ✅ `payment.test.ts`(PAID_PENDING_SERVICE 포함), `order-flow.test.ts` |
+| 사용자 역할 변경 | 통합 | `요구사항.md` §13.1 | ✅ `admin-authz.test.ts` |
+| 동시 결제(레이스 컨디션) | 동시성 | `docs/RESEARCH.md` Agent E, `docs/adr/0005` | ✅ `payment.test.ts` |
+| 감사 로그 해시체인 무결성 | 단위 | `docs/SECURITY.md` §1 | ✅ `auditLog.test.ts` |
+| 더치페이 나머지(원 단위) 정확 분배 | 단위 | `docs/RESEARCH.md` Agent E | ✅ `splitEvenly.test.ts` |
+| 로그인 brute force(계정/IP) | 통합 | `docs/SECURITY.md` §1 | ✅ `login-guard.test.ts` |
+| 운영 설정 킬스위치/테이블 잠금 | 통합 | `요구사항.md` §19 | ✅ `admin-operations.test.ts` |
+| 서빙완료 되돌리기 시간 제한 | 통합 | `요구사항.md` §2.4 | ✅ `serving-flow.test.ts` |
+| DB 백업 생성/다운로드/경로조작 방지 | 통합 | `요구사항.md` §13 | ✅ `admin-operations.test.ts` |
+
+**서버 자동 테스트 현황(2026-09-11 기준): 12개 파일 / 85개 테스트, 전부 통과.** `cd server && npx vitest run`으로 재현.
 
 ## 3. E2E 시나리오 (Playwright, `요구사항.md` §21 기준)
 

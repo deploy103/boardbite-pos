@@ -2,7 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../prisma.js";
 import { isProduction } from "../env.js";
-import { requireTableSession, TABLE_SESSION_COOKIE } from "../middleware/requireTableSession.js";
+import { requireTableSession, requireOrderableSession, TABLE_SESSION_COOKIE } from "../middleware/requireTableSession.js";
 import { createOrder, OrderValidationError } from "../services/order.js";
 import { computeBill } from "../services/billing.js";
 import { recordAuditLog } from "../services/auditLog.js";
@@ -17,7 +17,7 @@ customerRouter.get("/entry/:slug", async (req, res) => {
   const { slug } = req.params;
   const table = await prisma.table.findUnique({ where: { publicSlug: slug } });
 
-  if (!table || table.status !== "OPEN") {
+  if (!table || (table.status !== "OPEN" && table.status !== "SETTLING")) {
     res.clearCookie(TABLE_SESSION_COOKIE);
     res.json({
       open: false,
@@ -28,7 +28,7 @@ customerRouter.get("/entry/:slug", async (req, res) => {
   }
 
   const session = await prisma.tableSession.findFirst({
-    where: { tableId: table.id, status: "ACTIVE" },
+    where: { tableId: table.id, status: { in: ["ACTIVE", "PAID_PENDING_SERVICE"] } },
     orderBy: { openedAt: "desc" },
   });
 
@@ -68,7 +68,11 @@ customerRouter.get("/menu", requireTableSession, async (_req, res) => {
 
 customerRouter.get("/session", requireTableSession, async (req, res) => {
   const bill = await computeBill(req.tableSession!.id);
-  res.json({ tableNumber: req.tableSession!.tableNumber, bill });
+  res.json({
+    tableNumber: req.tableSession!.tableNumber,
+    sessionStatus: req.tableSession!.sessionStatus,
+    bill,
+  });
 });
 
 customerRouter.get("/orders", requireTableSession, async (req, res) => {
@@ -131,7 +135,7 @@ customerRouter.post("/staff-call", requireTableSession, async (req, res) => {
   res.status(201).json({ call });
 });
 
-customerRouter.post("/orders", requireTableSession, async (req, res) => {
+customerRouter.post("/orders", requireTableSession, requireOrderableSession, async (req, res) => {
   const parsed = createOrderSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "주문 내용이 올바르지 않습니다." });
