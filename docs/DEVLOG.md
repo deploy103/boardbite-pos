@@ -5,6 +5,32 @@
 
 ---
 
+## 2026-09-12 01:15
+
+**작업자/에이전트:** Claude (메인 개발 에이전트)
+
+**이번 작업 목적:** Phase 7(안정화) — Playwright E2E 인프라 도입, 요구사항.md §21 시나리오 A/D/H/I를 실제 브라우저로 자동화.
+
+**구현 내용:**
+- 새 워크스페이스 `e2e/`: `@playwright/test` 도입. `e2e/scripts/prepare-and-start.mjs`가 클라이언트 빌드 → 격리된 SQLite(`server/prisma/e2e.db`) 마이그레이션+시드(부트스트랩 계정) → 서버 기동을 순서대로 수행하고, Playwright의 `webServer` 옵션이 이 스크립트를 실행해 서버가 뜬 뒤 테스트를 시작한다.
+- `e2e/tests/scenario-a.spec.ts`: FRONT 오픈 → 손님 주문(실제 클릭) → POS 접수/조리시작/준비완료 → SERVING 서빙완료 → FRONT 현금 정산(정확한 금액) → 자동 CLOSE → **손님 화면이 소켓 이벤트로 CLOSED를 자동 인지**하는지까지 전부 실제 브라우저 4개 컨텍스트(FRONT/손님/POS/SERVING)로 검증. ADMIN 계정으로 API를 통해 테이블/메뉴를 미리 만들어 테스트를 서로 독립시킴.
+- `e2e/tests/security-and-edge-cases.spec.ts`: 시나리오 I(미오픈 테이블 QR 차단), H(POS 계정으로 `/admin` 직접 접속 시 클라이언트가 로그인 화면으로 리다이렉트 + 서버 API도 403), D(주문 버튼 실제 더블클릭 시 1건만 생성).
+- CI(`.github/workflows/ci.yml`)에 `e2e` 잡 추가 — `playwright install --with-deps chromium` 후 `npm run test:e2e` 실행, 실패 시 HTML 리포트를 아티팩트로 업로드.
+
+**발견하고 고친 문제**:
+1. **쿠키 버그**: E2E 서버 기동 스크립트에 처음에 `NODE_ENV=production`을 줬더니, `docs/adr/0003-auth-session.md`대로 세션 쿠키에 `Secure` 속성이 강제되어 순수 HTTP로 뜨는 E2E 서버에서 로그인 쿠키가 전혀 저장되지 않았다(모든 이후 요청이 401). `NODE_ENV=development`로 바꿔 해결 — E2E는 HTTPS 없이 로컬에서 돈다는 사실을 명확히 주석으로 남김.
+2. **테스트 격리 버그**: Playwright 설정이 한 실행 안의 모든 스펙 파일이 같은 서버/DB를 공유하도록 되어 있는데(`workers:1`, `webServer`가 실행당 1번만 뜸), 손님 메뉴 화면에서 `getByRole('button', {name:'담기'}).first()`로 아무 메뉴나 담다 보니 **다른 스펙 파일이 먼저 만들어둔 메뉴**를 잘못 담아 금액 검증이 깨졌다. 각 테스트가 만든 카테고리 탭으로 명시적으로 이동한 뒤 그 카테고리 안에서만 항목을 찾도록 수정 — 여러 테스트가 서버 상태를 공유할 때는 "화면에 하나뿐일 것"이라고 가정하면 안 된다는 교훈.
+
+**실행한 테스트:** `cd e2e && npx playwright test` — **4개 전부 통과**(로컬에서 반복 실행해 flaky 여부 확인 완료). 서버 자동 테스트(13개 파일/90개)는 이번 작업에서 변경 없음, 영향 없음을 확인.
+
+**남은 문제:** 실기기(iPhone Safari/Android Chrome) 테스트는 여전히 이 환경에서 직접 수행할 수 없음(피지컬 디바이스 필요) — 사람이 직접 확인해야 함. Playwright 시나리오는 Desktop Chrome 기준이며, 모바일 뷰포트(`devices['iPhone 13']` 등) 에뮬레이션 추가는 후속 작업으로 남김.
+
+**다음 작업자가 가장 먼저 할 일:** `docs/HANDOFF.md` 참고. 남은 것은 실기기 확인과 모바일 뷰포트 E2E 추가 정도.
+
+**관련 커밋:** (이 작업 직후 커밋 예정)
+
+---
+
 ## 2026-09-12 00:40
 
 **작업자/에이전트:** Claude (메인 개발 에이전트)

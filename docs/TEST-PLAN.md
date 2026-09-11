@@ -6,7 +6,7 @@
 
 - **단위 테스트**: 순수 로직(더치페이 나머지 분배 알고리즘, 미수금 계산, 상태 전이 검증 함수 등) — Vitest.
 - **통합 테스트**: API 엔드포인트를 실제 SQLite 테스트 DB(요청마다 격리된 파일 또는 트랜잭션 롤백)로 검증 — Vitest + Supertest.
-- **E2E 테스트**: 실제 브라우저로 화면 흐름 검증(모바일 뷰포트 포함) — Playwright.
+- **E2E 테스트**: 실제 브라우저(Chromium)로 여러 역할(FRONT/POS/SERVING/손님)을 각각 별도 브라우저 컨텍스트로 띄워 화면 흐름을 검증 — Playwright. `e2e/` 워크스페이스, `npm run test:e2e`로 실행. 실제 클라이언트 빌드(`vite build`)를 서버가 정적 서빙하는 상태로 띄우고, 격리된 SQLite(`server/prisma/e2e.db`)를 매 실행마다 새로 마이그레이션+시드한다(`e2e/scripts/prepare-and-start.mjs`). GitHub Actions CI에서도 매 push마다 실행된다.
 - **동시성 테스트**: Node 프로세스 내에서 Promise.all로 동시 요청을 발사해 race condition을 재현 — Vitest + Supertest.
 
 ## 2. 필수 자동 테스트 대상
@@ -39,16 +39,20 @@
 
 ## 3. E2E 시나리오 (Playwright, `요구사항.md` §21 기준)
 
-- 시나리오 A(정상 흐름): FRONT OPEN → 고객 주문 → POS 접수/조리/완료 → SERVING 완료 → 추가주문 → FRONT 정산(현금) → 잔액 0 → 자동 CLOSE → 재주문 실패.
-- 시나리오 B(다른 테이블 추측): slug/세션 변조 시도 → 실패.
-- 시나리오 C(가격 위조): 요청 body 가격 변조 → 서버 가격 적용 확인.
-- 시나리오 D(더블탭): 주문 버튼 빠르게 2회 클릭 → 1건만 생성.
-- 시나리오 E(분할결제): 30,000원을 3명이 서로 다른 수단으로 분할 → 합계 정확히 30,000원.
-- 시나리오 F(상품별 결제): 동일 상품 2개 중 1개만 결제 → 나머지 1개 미결제로 남음.
-- 시나리오 G(동시 정산): 두 FRONT 세션이 동시 결제 시도 → 초과결제 없음.
-- 시나리오 H(권한 우회): POS 계정으로 관리자 API 호출 → 403.
-- 시나리오 I(CLOSED 주문): CLOSED 테이블 QR 접근 → 차단 안내.
-- 시나리오 J(결제 후 세션): 완납 후 이전 고객 브라우저에서 주문 시도 → 세션 만료 오류.
+| 시나리오 | 내용 | 상태 |
+|---|---|---|
+| A(정상 흐름) | FRONT OPEN → 고객 주문 → POS 접수/조리/완료 → SERVING 완료 → FRONT 정산(현금) → 잔액 0 → 자동 CLOSE → 고객 화면이 소켓으로 CLOSED를 자동 인지 | ✅ `e2e/tests/scenario-a.spec.ts` |
+| B(다른 테이블 추측) | slug/세션 변조 시도 → 실패 | 서버 통합테스트로 커버(`order-flow.test.ts`) |
+| C(가격 위조) | 요청 body 가격 변조 → 서버 가격 적용 확인 | 서버 통합테스트로 커버(`order-flow.test.ts`) |
+| D(더블탭) | 주문 버튼 빠르게 2회 클릭 → 1건만 생성 | ✅ `e2e/tests/security-and-edge-cases.spec.ts`(실제 브라우저 클릭) |
+| E(분할결제) | 30,000원을 3명이 서로 다른 수단으로 분할 → 합계 정확히 30,000원 | 서버 통합테스트로 커버(`payment.test.ts`) |
+| F(상품별 결제) | 동일 상품 2개 중 1개만 결제 → 나머지 1개 미결제로 남음 | 서버 통합테스트로 커버(`payment.test.ts`) |
+| G(동시 정산) | 두 FRONT 세션이 동시 결제 시도 → 초과결제 없음 | 서버 통합테스트로 커버(`payment.test.ts`, `Promise.allSettled`) |
+| H(권한 우회) | POS 계정으로 관리자 API 호출 → 403, 브라우저에서 `/admin` 직접 접근 시 로그인 화면으로 리다이렉트 | ✅ `e2e/tests/security-and-edge-cases.spec.ts` + 서버 `rbac.test.ts` |
+| I(CLOSED 주문) | CLOSED/미오픈 테이블 QR 접근 → 차단 안내, 메뉴 미노출 | ✅ `e2e/tests/security-and-edge-cases.spec.ts` |
+| J(결제 후 세션) | 완납 후 이전 고객 브라우저에서 주문 시도 → 세션 만료 오류 | 서버 통합테스트로 커버(`order-flow.test.ts`) |
+
+브라우저 자동화가 반드시 필요한 시나리오(A/D/H/I — 실제 클릭·리다이렉트·소켓 반영을 확인해야 하는 것들)만 Playwright로 작성했고, 순수 API 동작 검증만으로 충분한 시나리오(B/C/E/F/G/J)는 이미 서버 통합테스트가 더 정밀하게(동시성 등) 커버하고 있어 중복 작성하지 않았다.
 
 ## 4. 동시성 테스트 상세
 
