@@ -1,0 +1,16 @@
+title = "BoardBite POS gitleaks config"
+
+# 기본 룰셋은 그대로 쓰고, 알려진 오탐만 예외 처리한다.
+[extend]
+useDefault = true
+
+[[allowlist]]
+description = """
+e2e/ 아래의 계정 문자열은 Playwright E2E 테스트 전용 더미 자격증명이다.
+매 CI 실행마다 새로 만들어지는 격리된 SQLite DB(server/prisma/e2e.db, .gitignore 처리됨)에만
+쓰이는 값이며, 운영 환경과는 무관하다(docs/adr/0003-auth-session.md, e2e/scripts/prepare-and-start.mjs 참고).
+실제 비밀번호처럼 보이는 고엔트로피 문자열이라 gitleaks의 generic-api-key 규칙이 오탐한다.
+"""
+paths = [
+  '''e2e/.*''',
+]
