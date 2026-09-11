@@ -61,10 +61,10 @@ BoardBite POS는 단일 Node.js(TypeScript) 프로세스가 다음을 함께 제
 **핵심 설계 결정(연구 근거 반영)**
 
 - `Order`/`OrderItem`에 `paidAmount`/`isPaid` 컬럼을 두지 않는다. 미수금은 항상 `Payment`+`PaymentAllocation`을 집계해 파생한다(`docs/RESEARCH.md` Agent E, `server/src/services/billing.ts`).
-- `Payment`는 append-only. 취소는 `kind='VOID'`(세션이 아직 ACTIVE/PAID_PENDING_SERVICE일 때, 즉시 취소) 또는 `'REFUND'`(세션이 이미 CLOSED/EXPIRED일 때, 사후 환불)인 새 레코드를 추가해 원본을 상쇄한다. `kind='DISCOUNT'`도 존재하며 미수금 계산에는 `CHARGE`와 동일하게 반영되지만 매출 집계(`chargedAmount`)에서는 제외된다. UPDATE/DELETE는 애플리케이션 DB 계정 권한에서 제거한다.
+- `Payment`는 append-only. 취소는 `kind='VOID'`(세션이 아직 ACTIVE/PAID_PENDING_SERVICE일 때, 즉시 취소) 또는 `'REFUND'`(세션이 이미 CLOSED/EXPIRED일 때, 사후 환불)인 새 레코드를 추가해 원본을 상쇄한다. `kind='DISCOUNT'`도 존재하며 미수금 계산에는 `CHARGE`와 동일하게 반영되지만 매출 집계(`chargedAmount`)에서는 제외된다. 애플리케이션 코드 어디에서도 `Payment`에 대한 update/delete를 호출하지 않는다(SQLite는 Postgres류의 DB 계정별 권한 부여를 지원하지 않으므로, 이는 DB 레벨 강제가 아니라 코드 컨벤션 + 코드리뷰로 지키는 규칙이다).
 - 모든 금액 필드는 KRW 정수(SQLite INTEGER). 부동소수점 금지.
 - `Payment.tenderedAmount`/`changeAmount`는 현금(`PaymentMethod.isCash=true`) 결제에서만 채워지며, "받은 금액/거스름돈"을 그대로 영수증에 재현할 수 있게 한다.
-- `AuditLog`는 해시체인으로 사후 변조를 탐지 가능하게 한다(`docs/RESEARCH.md` Agent D).
+- `AuditLog`는 해시체인으로 사후 변조를 탐지 가능하게 한다(`docs/RESEARCH.md` Agent D). ADMIN의 "로그 정리" 삭제만 예외적으로 허용되며 그 자체가 `AUDIT_LOG_PURGE` 레코드로 영구히 남는다 — 트레이드오프는 `docs/SECURITY.md` §1.1 참고.
 - 메뉴/옵션 가격은 주문 시점에 `OrderItem.unitPrice`/`OrderItemOption.extraPriceSnapshot`으로 스냅샷하여, 이후 관리자가 가격을 바꿔도 기존 주문 금액이 바뀌지 않는다.
 - **하드코딩 금지 원칙**: KDS 지연 기준, 서빙 되돌리기 허용 시간, 전체 주문/결제 활성화 여부는 전부 `OperationSettings` 싱글턴 행에서 읽어온다(`server/src/services/settings.ts`). 클라이언트는 `GET /api/staff/settings`로 이 값을 가져와 사용하며 상수로 박아두지 않는다(`client/src/lib/useOperationSettings.ts`).
 - 결제수단은 `PaymentMethod` 테이블로 관리되며 ADMIN이 CASH/CARD/OTHER 외 커스텀 결제수단을 추가할 수 있다. `isCash=true`인 결제수단만 받은금액/거스름돈 로직이 적용된다(커스텀 결제수단은 항상 `isCash=false`로 생성되어 실물 현금 거스름돈 개념이 섞이지 않는다).

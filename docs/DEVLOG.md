@@ -5,6 +5,29 @@
 
 ---
 
+## 2026-09-12 00:25
+
+**작업자/에이전트:** Claude (메인 개발 에이전트)
+
+**이번 작업 목적:** 이전 커밋에서 빠졌던 요구사항.md §13.5 "로그 삭제(관리자 전용, 삭제 동작 자체의 최소 감사 흔적 유지)" 기능 추가.
+
+**구현 내용:**
+- `server/src/services/auditLog.ts`에 `purgeAuditLogs(beforeDate, staffId)` 추가 — 삭제보다 먼저 `AUDIT_LOG_PURGE` 레코드를 기록한 뒤 대상 레코드를 삭제. `AUDIT_LOG_PURGE` 자신은 어떤 정리 요청으로도 삭제되지 않음.
+- `verifyAuditLogChain()` 로직을 재설계 — 정리로 인해 체인 중간(두 정리 시점 사이)에 링크가 끊기는 경우까지 정상 처리하도록 "체인 진입점"(첫 레코드 또는 AUDIT_LOG_PURGE 레코드)만 이전 레코드와의 연결 검증을 면제. **첫 구현은 버그가 있었다** — logs[0]만 예외 처리했더니 두 번째 정리 이후에 생성된 일반 레코드가 세 번째 정리로 삭제되면서 중간 링크가 끊기는 케이스를 "변조"로 오탐(자동 테스트로 발견, 즉시 수정).
+- `server/src/routes/admin.routes.ts`: `POST /audit-logs/purge`(body `{beforeDate, confirm:true}`), 검색 필터 확장(`actorId`, `targetId`, `since`, `until`), CSV 내보내기도 동일 필터 지원.
+- `client/src/pages/AdminHome.tsx`의 `LogsPanel`에 기간/액션 검색, CSV 내보내기 링크, 정리 버튼(브라우저 confirm 2회로 이중 확인) 추가.
+- `docs/SECURITY.md` §1.1 신설 — 정리 기능이 "완전한 append-only" 원칙과 상충하는 지점과, 받아들이는 트레이드오프(정리 직전 구간은 무결성 증명 불가)를 명시. `docs/ARCHITECTURE.md`의 "UPDATE/DELETE는 DB 권한에서 제거" 표현도 SQLite에는 해당 개념이 없다는 사실에 맞춰 "코드 컨벤션" 표현으로 정정.
+
+**실행한 테스트:** `server/tests/audit-log-purge.test.ts` 신규 5개 테스트 작성(정리 동작, PURGE 레코드 보존, 정리 후 체인 정상판정, API 이중확인, 필터 검색). **전체 스위트 13개 파일 / 90개 테스트 전부 통과.** 서버/클라이언트 `tsc --noEmit` 클린, client build 성공.
+
+**남은 문제:** 없음(이 작업 범위 내에서는).
+
+**다음 작업자가 가장 먼저 할 일:** `docs/HANDOFF.md` 참고 — Phase 7(안정화)로 진행.
+
+**관련 커밋:** (이 작업 직후 커밋 예정)
+
+---
+
 ## 2026-09-12 00:10
 
 **작업자/에이전트:** Claude (메인 개발 에이전트) + 병렬 서브에이전트 5개(2팀으로 순차 투입)

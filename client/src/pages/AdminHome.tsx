@@ -343,13 +343,29 @@ function GamePlansPanel() {
 function LogsPanel() {
   const [logs, setLogs] = useState<any[]>([]);
   const [verifyResult, setVerifyResult] = useState<string | null>(null);
-  const { error, setError } = useErrorBanner();
+  const [actionFilter, setActionFilter] = useState("");
+  const [since, setSince] = useState("");
+  const [until, setUntil] = useState("");
+  const [purgeBeforeDate, setPurgeBeforeDate] = useState("");
+  const [purgeResult, setPurgeResult] = useState<string | null>(null);
+  const { error, setError, wrap } = useErrorBanner();
+
+  function buildQuery() {
+    const params = new URLSearchParams();
+    if (actionFilter) params.set("action", actionFilter);
+    if (since) params.set("since", new Date(since).toISOString());
+    if (until) params.set("until", new Date(until).toISOString());
+    return params.toString();
+  }
+
+  const search = wrap(async () => {
+    const data = await api.get(`/api/staff/admin/audit-logs?${buildQuery()}`);
+    setLogs(data.logs);
+  });
 
   useEffect(() => {
-    api
-      .get("/api/staff/admin/audit-logs")
-      .then((d) => setLogs(d.logs))
-      .catch(() => setError("감사 로그를 불러오지 못했어요."));
+    search();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const verify = async () => {
@@ -357,13 +373,49 @@ function LogsPanel() {
     setVerifyResult(result.ok ? "무결성 검증 통과: 변조 흔적이 없습니다." : `무결성 오류 발견: ${result.brokenAt}`);
   };
 
+  const purge = wrap(async () => {
+    if (!purgeBeforeDate) return;
+    const dateLabel = new Date(purgeBeforeDate).toLocaleString();
+    if (!window.confirm(`${dateLabel} 이전의 로그를 정말 삭제할까요? 이 작업은 되돌릴 수 없어요.`)) return;
+    if (!window.confirm("한 번 더 확인할게요. 정말 삭제할까요?")) return;
+    const result = await api.post("/api/staff/admin/audit-logs/purge", {
+      beforeDate: new Date(purgeBeforeDate).toISOString(),
+      confirm: true,
+    });
+    setPurgeResult(`${result.result.deletedCount}건을 삭제했어요.`);
+    await search();
+  });
+
   return (
     <section>
-      <button className="btn-secondary" onClick={verify}>
-        해시체인 무결성 검증
-      </button>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
+        <input className="field" style={{ marginBottom: 0 }} placeholder="액션(예: PAYMENT_CREATED)" value={actionFilter} onChange={(e) => setActionFilter(e.target.value)} />
+        <input className="field" style={{ marginBottom: 0 }} type="datetime-local" value={since} onChange={(e) => setSince(e.target.value)} />
+        <input className="field" style={{ marginBottom: 0 }} type="datetime-local" value={until} onChange={(e) => setUntil(e.target.value)} />
+        <button className="btn-secondary" onClick={search}>
+          검색
+        </button>
+        <a className="btn-secondary" href={`/api/staff/admin/export/audit-logs.csv?${buildQuery()}`} style={{ textDecoration: "none", display: "inline-flex", alignItems: "center" }}>
+          CSV 내보내기
+        </a>
+        <button className="btn-secondary" onClick={verify}>
+          해시체인 무결성 검증
+        </button>
+      </div>
       {verifyResult && <p className="text-muted">{verifyResult}</p>}
       {error && <p className="error-text">{error}</p>}
+
+      <div className="list-row" style={{ alignItems: "flex-end" }}>
+        <div>
+          <div className="text-muted">이 날짜 이전 로그 정리(삭제)</div>
+          <input className="field" type="datetime-local" value={purgeBeforeDate} onChange={(e) => setPurgeBeforeDate(e.target.value)} />
+        </div>
+        <button className="btn-secondary" onClick={purge} disabled={!purgeBeforeDate}>
+          정리 실행
+        </button>
+      </div>
+      {purgeResult && <p className="text-muted">{purgeResult}</p>}
+
       {logs.map((log) => (
         <div key={log.id} className="list-row">
           <div>

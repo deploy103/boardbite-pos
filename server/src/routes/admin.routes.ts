@@ -4,7 +4,7 @@ import { prisma } from "../prisma.js";
 import { requireRole } from "../middleware/requireRole.js";
 import { hashPassword } from "../auth/password.js";
 import { generateToken } from "../services/tableToken.js";
-import { recordAuditLog, verifyAuditLogChain } from "../services/auditLog.js";
+import { recordAuditLog, verifyAuditLogChain, purgeAuditLogs } from "../services/auditLog.js";
 import { getSettings, updateSettings } from "../services/settings.js";
 import { computeRevenueSummary } from "../services/reporting.js";
 import { createBackup, listBackups, getBackupFilePath } from "../services/backup.js";
@@ -527,13 +527,41 @@ adminRouter.patch("/settings", async (req, res) => {
 
 // ---------- 감사 로그 ----------
 
+const auditLogQuerySchema = z.object({
+  action: z.string().optional(),
+  actorId: z.string().optional(),
+  targetId: z.string().optional(),
+  since: z.string().optional(),
+  until: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(500).optional(),
+});
+
+function buildAuditLogWhere(query: z.infer<typeof auditLogQuerySchema>) {
+  const where: NonNullable<Parameters<typeof prisma.auditLog.findMany>[0]>["where"] = {};
+  if (query.action) where.action = query.action;
+  if (query.actorId) where.actorId = query.actorId;
+  if (query.targetId) where.targetId = query.targetId;
+  const since = query.since ? new Date(query.since) : undefined;
+  const until = query.until ? new Date(query.until) : undefined;
+  if ((since && !Number.isNaN(since.getTime())) || (until && !Number.isNaN(until.getTime()))) {
+    where.createdAt = {
+      ...(since && !Number.isNaN(since.getTime()) ? { gte: since } : {}),
+      ...(until && !Number.isNaN(until.getTime()) ? { lte: until } : {}),
+    };
+  }
+  return where;
+}
+
 adminRouter.get("/audit-logs", async (req, res) => {
-  const limit = Math.min(Number(req.query.limit) || 100, 500);
-  const action = typeof req.query.action === "string" ? req.query.action : undefined;
+  const parsed = auditLogQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    res.status(400).json({ error: "검색 조건이 올바르지 않아요." });
+    return;
+  }
   const logs = await prisma.auditLog.findMany({
-    where: action ? { action } : undefined,
+    where: buildAuditLogWhere(parsed.data),
     orderBy: { createdAt: "desc" },
-    take: limit,
+    take: parsed.data.limit ?? 100,
   });
   res.json({ logs });
 });
@@ -543,10 +571,32 @@ adminRouter.get("/audit-logs/verify", async (_req, res) => {
   res.json({ ok: brokenAt === null, brokenAt });
 });
 
+const purgeAuditLogsSchema = z.object({
+  beforeDate: z.string().min(1),
+  confirm: z.literal(true),
+});
+
+// 요구사항.md §13.5 "로그 삭제" — 이중 확인은 클라이언트가 확인 대화상자로 처리하고,
+// 서버는 confirm:true를 명시적으로 요구해 실수로 인한 대량 삭제를 최소화한다.
+adminRouter.post("/audit-logs/purge", async (req, res) => {
+  const parsed = purgeAuditLogsSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "삭제 기준 날짜와 확인이 필요해요." });
+    return;
+  }
+  const beforeDate = new Date(parsed.data.beforeDate);
+  if (Number.isNaN(beforeDate.getTime())) {
+    res.status(400).json({ error: "날짜 형식이 올바르지 않아요." });
+    return;
+  }
+  const result = await purgeAuditLogs(beforeDate, req.session.staffUserId!);
+  res.json({ result });
+});
+
 adminRouter.get("/export/audit-logs.csv", async (req, res) => {
-  const action = typeof req.query.action === "string" ? req.query.action : undefined;
+  const parsed = auditLogQuerySchema.safeParse(req.query);
   const logs = await prisma.auditLog.findMany({
-    where: action ? { action } : undefined,
+    where: parsed.success ? buildAuditLogWhere(parsed.data) : undefined,
     orderBy: { createdAt: "asc" },
   });
   const csv = toCsv(
