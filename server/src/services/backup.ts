@@ -55,13 +55,33 @@ export async function createBackup(staffId: string | undefined | null): Promise<
   return { filename, sizeBytes: stats.size, createdAt: new Date().toISOString() };
 }
 
+// 생성 시 파일명 형식: `boardbite-${new Date().toISOString().replace(/[:.]/g, "-")}.db`
+// 예: 2026-09-11T14:32:50.593Z → boardbite-2026-09-11T14-32-50-593Z.db
+const FILENAME_TIMESTAMP_RE = /^boardbite-(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z\.db$/;
+
+/**
+ * 파일명에서 생성 시각을 복원한다. `fs.Stats.birthtime`은 WSL의 DrvFs(`/mnt/c/...`) 등
+ * 일부 파일시스템에서 지원되지 않아 항상 1970-01-01을 반환하는 경우가 있어, 더 신뢰할 수 있는
+ * 파일명 기반 방식을 우선 사용하고 실패하면 mtime으로 대체한다(백업 파일은 생성 후 다시 수정되지
+ * 않으므로 mtime도 사실상 생성시각과 같다).
+ */
+function resolveCreatedAt(filename: string, stats: { mtime: Date }): string {
+  const match = filename.match(FILENAME_TIMESTAMP_RE);
+  if (match) {
+    const [, datePart, hh, mm, ss, ms] = match;
+    const parsed = new Date(`${datePart}T${hh}:${mm}:${ss}.${ms}Z`);
+    if (!Number.isNaN(parsed.getTime())) return parsed.toISOString();
+  }
+  return stats.mtime.toISOString();
+}
+
 export function listBackups(): BackupFile[] {
   if (!existsSync(backupsDir)) return [];
   return readdirSync(backupsDir)
     .filter((f) => f.endsWith(".db"))
     .map((filename) => {
       const stats = statSync(path.join(backupsDir, filename));
-      return { filename, sizeBytes: stats.size, createdAt: stats.birthtime.toISOString() };
+      return { filename, sizeBytes: stats.size, createdAt: resolveCreatedAt(filename, stats) };
     })
     .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
 }

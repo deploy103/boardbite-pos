@@ -152,7 +152,12 @@ describe("DB 백업 (ADMIN)", () => {
     expect(create.body.backup.filename).toMatch(/\.db$/);
 
     const list = await admin.get("/api/staff/admin/backups");
-    expect(list.body.backups.some((b: { filename: string }) => b.filename === create.body.backup.filename)).toBe(true);
+    const listed = list.body.backups.find((b: { filename: string }) => b.filename === create.body.backup.filename);
+    expect(listed).toBeDefined();
+    // birthtime이 지원되지 않는 파일시스템(WSL DrvFs 등)에서도 파일명 기반으로 생성시각을 정확히
+    // 복원해야 한다 — 1970-01-01(epoch)로 잘못 나오지 않는지 확인한다.
+    expect(new Date(listed.createdAt).getFullYear()).toBeGreaterThan(2000);
+    expect(Date.now() - new Date(listed.createdAt).getTime()).toBeLessThan(60_000);
 
     const download = await admin.get(`/api/staff/admin/backups/${create.body.backup.filename}`);
     expect(download.status).toBe(200);
