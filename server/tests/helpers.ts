@@ -42,3 +42,22 @@ export async function createTableWithMenu() {
   });
   return { table, category, menuItem };
 }
+
+// ---- 아래는 Phase 3(주방/KDS)와 무관한 테스트(로그인 방어, 정산, 테이블 세션, 관리자 API)를 위해 추가된 헬퍼 ----
+
+export async function getStaffIdByUsername(username: string): Promise<string> {
+  const user = await prisma.staffUser.findUniqueOrThrow({ where: { username } });
+  return user.id;
+}
+
+export async function createGameTimePlan(minutes: number, price = 1000) {
+  return prisma.gameTimePlan.create({
+    data: { name: unique(`plan_${minutes}m`), minutes, price },
+  });
+}
+
+export async function createBareTable() {
+  return prisma.table.create({
+    data: { number: Math.floor(Math.random() * 1_000_000) + 1, publicSlug: unique("slug") },
+  });
+}

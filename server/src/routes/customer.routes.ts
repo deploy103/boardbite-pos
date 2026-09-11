@@ -5,6 +5,8 @@ import { isProduction } from "../env.js";
 import { requireTableSession, TABLE_SESSION_COOKIE } from "../middleware/requireTableSession.js";
 import { createOrder, OrderValidationError } from "../services/order.js";
 import { computeBill } from "../services/billing.js";
+import { recordAuditLog } from "../services/auditLog.js";
+import { appEvents, RealtimeEvent } from "../realtime.js";
 
 export const customerRouter = Router();
 
@@ -91,6 +93,42 @@ const createOrderSchema = z.object({
     )
     .min(1)
     .max(50),
+});
+
+// 직원 호출 (요구사항.md §2.1, §19 "직원 호출") — 이미 대기 중인 호출이 있으면 중복 생성하지 않는다.
+customerRouter.get("/staff-call", requireTableSession, async (req, res) => {
+  const pending = await prisma.staffCallRequest.findFirst({
+    where: { tableSessionId: req.tableSession!.id, status: { in: ["PENDING", "ACKED"] } },
+    orderBy: { createdAt: "desc" },
+  });
+  res.json({ call: pending });
+});
+
+customerRouter.post("/staff-call", requireTableSession, async (req, res) => {
+  const existing = await prisma.staffCallRequest.findFirst({
+    where: { tableSessionId: req.tableSession!.id, status: { in: ["PENDING", "ACKED"] } },
+  });
+  if (existing) {
+    res.status(200).json({ call: existing });
+    return;
+  }
+
+  const call = await prisma.staffCallRequest.create({
+    data: { tableSessionId: req.tableSession!.id },
+  });
+  await recordAuditLog({
+    actorType: "SYSTEM",
+    action: "STAFF_CALL_REQUESTED",
+    targetType: "StaffCallRequest",
+    targetId: call.id,
+    metadata: { tableSessionId: req.tableSession!.id },
+  });
+  appEvents.emit(RealtimeEvent.StaffCallRequested, {
+    tableSessionId: req.tableSession!.id,
+    tableNumber: req.tableSession!.tableNumber,
+    callId: call.id,
+  });
+  res.status(201).json({ call });
 });
 
 customerRouter.post("/orders", requireTableSession, async (req, res) => {

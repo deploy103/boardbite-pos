@@ -166,3 +166,669 @@ h1 {
   color: var(--color-danger);
   font-size: 0.9rem;
 }
+
+/* ---------------------------------------------------------------------- */
+/* 고객 화면 확장 (docs/RESEARCH.md Agent C 종합 제안 기준). 기존 클래스는 그대로 두고
+   AdminHome/FrontHome 등 다른 화면과 겹치지 않는 새 클래스만 추가한다.           */
+/* ---------------------------------------------------------------------- */
+
+:root {
+  --space-12: 48px;
+}
+
+.text-body {
+  font-size: 1rem;
+  line-height: 1.5rem;
+  font-weight: 400;
+}
+
+.text-caption {
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  color: var(--color-text-muted);
+}
+
+.text-micro {
+  font-size: 0.75rem;
+  line-height: 1rem;
+  color: var(--color-text-muted);
+}
+
+/* 첫 화면: "N번 테이블 · 주문 가능"을 매우 명확하게 (요구사항 7.1) */
+.table-hero {
+  padding: var(--space-6) 0 var(--space-4);
+}
+
+.table-hero__number {
+  font-size: 2rem;
+  line-height: 2.5rem;
+  font-weight: 800;
+}
+
+.table-hero__status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  font-size: 1.125rem;
+  line-height: 1.625rem;
+  font-weight: 600;
+  color: var(--color-point);
+}
+
+.table-hero__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--color-point);
+}
+
+/* 화면 전환/카테고리 세그먼트 탭 */
+.seg-tabs {
+  display: flex;
+  gap: var(--space-2);
+  margin: var(--space-4) 0;
+}
+
+.seg-tab {
+  flex: 1;
+  min-height: 44px;
+  border: 1px solid var(--color-bg-alt);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-alt);
+  color: var(--color-text-muted);
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.seg-tab[aria-current="true"] {
+  background: var(--color-text);
+  border-color: var(--color-text);
+  color: #fff;
+}
+
+.category-tabs {
+  display: flex;
+  gap: var(--space-2);
+  overflow-x: auto;
+  padding-bottom: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.category-tab {
+  flex: 0 0 auto;
+  min-height: 44px;
+  padding: 0 var(--space-4);
+  border: 1px solid var(--color-bg-alt);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--color-text-muted);
+  font-size: 0.9rem;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.category-tab[aria-current="true"] {
+  background: var(--color-point);
+  border-color: var(--color-point);
+  color: #fff;
+}
+
+/* 메뉴 리스트 행 */
+.menu-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-4) 0;
+  border-bottom: 1px solid var(--color-bg-alt);
+}
+
+.menu-row__name {
+  font-size: 1.125rem;
+  line-height: 1.625rem;
+  font-weight: 600;
+}
+
+.menu-row__desc {
+  margin-top: 2px;
+  font-size: 0.875rem;
+  color: var(--color-text-muted);
+}
+
+.menu-row__price {
+  margin-top: var(--space-1);
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.menu-row__soldout-note {
+  margin-top: var(--space-1);
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+}
+
+.menu-row--disabled {
+  opacity: 0.55;
+}
+
+.menu-row__add {
+  flex-shrink: 0;
+  min-width: 64px;
+  min-height: 44px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: var(--color-point);
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.menu-row__add:disabled {
+  background: var(--color-text-disabled);
+  cursor: not-allowed;
+}
+
+/* 바텀시트 공통 (옵션 선택 / 장바구니 확인) */
+.sheet-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 18, 22, 0.45);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  z-index: 50;
+}
+
+.sheet {
+  width: 100%;
+  max-width: 480px;
+  max-height: 85vh;
+  overflow-y: auto;
+  background: #fff;
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  padding: var(--space-4);
+  padding-bottom: max(var(--space-4), env(safe-area-inset-bottom));
+}
+
+.sheet-handle {
+  width: 40px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--color-bg-alt);
+  margin: 0 auto var(--space-3);
+}
+
+.sheet-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-3);
+}
+
+.sheet-title {
+  font-size: 1.125rem;
+  line-height: 1.625rem;
+  font-weight: 600;
+  margin: 0;
+}
+
+.sheet-close {
+  min-width: 44px;
+  min-height: 44px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.sheet-body {
+  padding-bottom: var(--space-3);
+}
+
+.sheet-desc {
+  color: var(--color-text-muted);
+  font-size: 0.9rem;
+  margin: 0 0 var(--space-3);
+}
+
+.sheet-footer {
+  position: sticky;
+  bottom: 0;
+  background: #fff;
+  padding-top: var(--space-3);
+}
+
+/* 옵션 선택 */
+.option-group {
+  margin-bottom: var(--space-4);
+}
+
+.option-group__title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin-bottom: var(--space-2);
+}
+
+.option-choice {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 44px;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--color-bg-alt);
+  border-radius: var(--radius-md);
+  margin-bottom: var(--space-2);
+  cursor: pointer;
+}
+
+.option-choice input {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+.option-choice__name {
+  flex: 1;
+  font-size: 0.95rem;
+}
+
+.option-choice__price {
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+}
+
+/* 수량 스테퍼 (모든 버튼 최소 44x44px) */
+.qty-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: var(--space-4) 0;
+}
+
+.qty-stepper {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.qty-btn {
+  width: 44px;
+  height: 44px;
+  border-radius: 999px;
+  border: 1px solid var(--color-bg-alt);
+  background: var(--color-bg-alt);
+  font-size: 1.1rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.qty-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.qty-value {
+  min-width: 24px;
+  text-align: center;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+/* 장바구니 시트 */
+.cart-line {
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--color-bg-alt);
+}
+
+.cart-line__top {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.cart-line__name {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.cart-line__options {
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+  margin-top: 2px;
+}
+
+.cart-line__price {
+  font-size: 1rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.cart-line__bottom {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: var(--space-2);
+}
+
+.cart-line__remove {
+  min-height: 44px;
+  padding: 0 var(--space-2);
+  border: none;
+  background: transparent;
+  color: var(--color-danger);
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.cart-total {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: var(--space-3) 0;
+  margin-top: var(--space-2);
+  border-top: 1px solid var(--color-bg-alt);
+}
+
+.cart-total__label {
+  font-size: 1rem;
+  color: var(--color-text-muted);
+}
+
+.cart-total__value {
+  font-size: 1.75rem;
+  font-weight: 700;
+}
+
+/* 주문 상태 타임라인 — 색상만이 아니라 텍스트로도 항상 단계를 표시한다 */
+.status-timeline {
+  display: flex;
+  margin: var(--space-4) 0 var(--space-2);
+}
+
+.status-step {
+  position: relative;
+  flex: 1;
+  text-align: center;
+}
+
+.status-step::after {
+  content: "";
+  position: absolute;
+  top: 6px;
+  left: 50%;
+  width: 100%;
+  height: 2px;
+  background: var(--color-bg-alt);
+  z-index: 0;
+}
+
+.status-step:last-child::after {
+  content: none;
+}
+
+.status-step--done::after {
+  background: var(--color-point);
+}
+
+.status-step__dot {
+  position: relative;
+  z-index: 1;
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: var(--color-bg-alt);
+  border: 2px solid #fff;
+}
+
+.status-step--done .status-step__dot,
+.status-step--current .status-step__dot {
+  background: var(--color-point);
+}
+
+.status-step__label {
+  display: block;
+  margin-top: var(--space-2);
+  font-size: 0.7rem;
+  color: var(--color-text-muted);
+}
+
+.status-step--current .status-step__label {
+  color: var(--color-text);
+  font-weight: 700;
+}
+
+.status-alert {
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  background: #fdecec;
+  color: var(--color-danger);
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.status-alert__reason {
+  display: block;
+  margin-top: var(--space-1);
+  font-weight: 400;
+  font-size: 0.85rem;
+}
+
+/* 로딩/오류 상태 */
+.skeleton-row {
+  height: 64px;
+  border-radius: var(--radius-md);
+  margin-bottom: var(--space-3);
+  background: linear-gradient(90deg, var(--color-bg-alt) 25%, #ececef 37%, var(--color-bg-alt) 63%);
+  background-size: 400% 100%;
+  animation: skeleton-shimmer 1.4s ease infinite;
+}
+
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0 50%;
+  }
+}
+
+.loading-center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40vh;
+  color: var(--color-text-muted);
+  font-size: 0.95rem;
+}
+
+.error-panel {
+  margin-top: var(--space-6);
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  background: #fdecec;
+  color: var(--color-danger);
+  text-align: center;
+}
+
+/* 주문 현황 카드 */
+.order-card {
+  border: 1px solid var(--color-bg-alt);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+  margin-bottom: var(--space-3);
+}
+
+.order-card__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.9rem;
+  color: var(--color-text-muted);
+}
+
+.order-card__id {
+  font-weight: 700;
+  color: var(--color-text);
+}
+
+.order-card__item {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.95rem;
+  padding: 2px 0;
+}
+
+.order-card__item-options {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+}
+
+.order-card__note {
+  margin-top: var(--space-2);
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+}
+
+/* 누적 금액 카드 (요구사항 7.6) */
+.bill-card {
+  border: 1px solid var(--color-bg-alt);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+
+.bill-card__row {
+  display: flex;
+  justify-content: space-between;
+  padding: var(--space-1) 0;
+  font-size: 0.95rem;
+  color: var(--color-text-muted);
+}
+
+.bill-card__row--total {
+  margin-top: var(--space-2);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-bg-alt);
+  font-size: 1.375rem;
+  font-weight: 700;
+  color: var(--color-text);
+}
+
+/* ---- KDS/POS(Phase 3) 전용 ---- */
+
+.kds-columns {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(260px, 1fr));
+  gap: var(--space-4);
+  overflow-x: auto;
+}
+
+.kds-column {
+  background: var(--color-bg-alt);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  min-height: 200px;
+}
+
+.kds-column h2 {
+  font-size: 1.1rem;
+  margin: 0 0 var(--space-3);
+}
+
+.kds-card {
+  background: #fff;
+  border: 1px solid var(--color-bg-alt);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.kds-card--warn {
+  border-color: var(--color-warn);
+}
+
+.kds-card--danger {
+  border-color: var(--color-danger);
+}
+
+.kds-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: var(--space-2);
+}
+
+.kds-table-number {
+  font-size: 1.1rem;
+  font-weight: 700;
+}
+
+.kds-order-id {
+  color: var(--color-text-muted);
+  font-size: 0.8rem;
+}
+
+.kds-elapsed {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.kds-note {
+  margin-top: var(--space-2);
+  padding: var(--space-2);
+  background: var(--color-bg-alt);
+  border-radius: var(--radius-md);
+  font-size: 0.85rem;
+}
+
+.kds-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.kds-actions button {
+  flex: 1;
+  min-height: 44px;
+}
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  z-index: 100;
+}
+
+.modal-sheet {
+  background: #fff;
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  padding: var(--space-4);
+  width: 100%;
+  max-width: 480px;
+}
+
+.reason-option {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 44px;
+}
+
+/* 직원 호출 버튼 (고객 화면) */
+.staff-call-btn {
+  margin-top: var(--space-3);
+  width: auto;
+  min-height: 44px;
+}

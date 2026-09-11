@@ -114,11 +114,13 @@ remaining == 0 이지만 미서빙 주문이 있음 → 내부 상태 PAID_PENDI
 
 전체 스펙은 구현 단계에서 OpenAPI로 구체화한다. 여기서는 핵심 원칙만 기록한다.
 
-- 손님 API: `Authorization`이 아니라 `TableSession` 쿠키로 인가. 모든 경로는 `/api/customer/*`.
-- 직원 API: 세션 쿠키 + 역할 미들웨어. `/api/staff/front/*`, `/api/staff/pos/*`, `/api/staff/serving/*`.
-- 관리자 API: `/api/admin/*`, `requireRole('ADMIN')` 미들웨어 일괄 적용.
+- 손님 API: `Authorization`이 아니라 `TableSession` 쿠키(`boardbite_table_token`)로 인가. 모든 경로는 `/api/customer/*`.
+- 직원 API: 세션 쿠키 + 역할 미들웨어. `/api/staff/front/*`, `/api/staff/pos/*`, `/api/staff/serving/*`(Phase 4 예정).
+- 관리자 API: `/api/staff/admin/*`, `requireRole('ADMIN')` 미들웨어 일괄 적용(다른 역할 라우터도 ADMIN은 겸임 허용).
 - 주문 생성(`POST /api/customer/orders`): body는 `{ idempotencyKey, items: [{ menuItemId, quantity, optionChoiceIds[] }], note? }`만 받는다. 가격/합계/테이블 식별자는 서버가 계산.
-- 결제 생성(`POST /api/staff/front/table-sessions/:id/payments`): body는 `{ idempotencyKey, method, amount, allocations?: [{orderItemId, quantity}], payerLabel? }`.
+- 직원 호출(`POST /api/customer/staff-call`): body 없음. 이미 PENDING/ACKED 상태의 호출이 있으면 새로 만들지 않고 기존 호출을 반환(중복 호출 방지).
+- 주문 상태 전이(POS, Phase 3): `POST /api/staff/pos/orders/:id/{accept|start-preparing|ready}`, `POST /api/staff/pos/orders/:id/{reject|cancel}`(body `{reason}` 필수), `GET /api/staff/pos/board`(활성 주문을 NEW/ACCEPTED/PREPARING/READY로 그룹화), `GET /api/staff/pos/history`(이력/취소 검색), `PATCH /api/staff/pos/menu-items/:id/sold-out`.
+- 결제 생성(Phase 5 예정, `POST /api/staff/front/table-sessions/:id/payments`): body는 `{ idempotencyKey, method, amount, allocations?: [{orderItemId, quantity}], payerLabel? }`.
 
 ## 7. 실시간 통신
 
