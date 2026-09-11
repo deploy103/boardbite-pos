@@ -1,0 +1,278 @@
+// BoardBite POS — Prisma schema
+// 설계 근거: docs/ARCHITECTURE.md §4, docs/adr/0003-auth-session.md, docs/adr/0004-table-token.md
+//
+// SQLite 커넥터는 네이티브 enum을 지원하지 않으므로(docs/adr/0001-tech-stack.md의 SQLite 채택에 따른 제약),
+// 상태값은 String 컬럼 + 애플리케이션 레벨 리터럴 유니온 타입(zod 스키마)으로 검증한다.
+// 허용값은 각 필드 주석에 명시한다.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model StaffUser {
+  id                String    @id @default(cuid())
+  username          String    @unique
+  passwordHash      String
+  displayName       String
+  role              String // ADMIN | FRONT | POS | SERVING
+  isActive          Boolean   @default(true)
+  mustResetPassword Boolean   @default(false)
+  isBootstrap       Boolean   @default(false)
+  lastLoginAt       DateTime?
+  createdAt         DateTime  @default(now())
+
+  openedTableSessions TableSession[] @relation("OpenedBy")
+  payments            Payment[]
+  loginAttempts       LoginAttempt[]
+}
+
+model StaffSession {
+  sid       String   @id
+  data      String
+  expiresAt DateTime
+
+  @@index([expiresAt])
+}
+
+model LoginAttempt {
+  id          String     @id @default(cuid())
+  username    String
+  succeeded   Boolean
+  ip          String?
+  staffUserId String?
+  staffUser   StaffUser? @relation(fields: [staffUserId], references: [id])
+  createdAt   DateTime   @default(now())
+
+  @@index([username, createdAt])
+}
+
+model Table {
+  id         String   @id @default(cuid())
+  number     Int      @unique
+  name       String?
+  status     String   @default("AVAILABLE") // DISABLED | AVAILABLE | OPEN | SETTLING
+  publicSlug String   @unique
+  sortOrder  Int      @default(0)
+  createdAt  DateTime @default(now())
+
+  sessions TableSession[]
+}
+
+model TableSession {
+  id          String   @id @default(cuid())
+  tableId     String
+  table       Table    @relation(fields: [tableId], references: [id])
+  token       String   @unique
+  status      String   @default("ACTIVE") // ACTIVE | CLOSED | EXPIRED
+  guestCount  Int?
+  note        String?
+  openedById  String
+  openedBy    StaffUser @relation("OpenedBy", fields: [openedById], references: [id])
+  openedAt    DateTime  @default(now())
+  closedAt    DateTime?
+  closeReason String?
+
+  gameUsages   TableGameUsage[]
+  orders       Order[]
+  payments     Payment[]
+  callRequests StaffCallRequest[]
+
+  @@index([tableId, status])
+}
+
+model GameTimePlan {
+  id       String  @id @default(cuid())
+  name     String
+  minutes  Int
+  price    Int
+  isActive Boolean @default(true)
+
+  usages TableGameUsage[]
+}
+
+model TableGameUsage {
+  id             String       @id @default(cuid())
+  tableSessionId String
+  tableSession   TableSession @relation(fields: [tableSessionId], references: [id])
+  planId         String
+  plan           GameTimePlan @relation(fields: [planId], references: [id])
+  minutes        Int
+  price          Int
+  startedAt      DateTime     @default(now())
+  endsAt         DateTime
+
+  @@index([tableSessionId])
+}
+
+model MenuCategory {
+  id        String @id @default(cuid())
+  name      String
+  sortOrder Int    @default(0)
+
+  items MenuItem[]
+}
+
+model MenuItem {
+  id            String       @id @default(cuid())
+  categoryId    String
+  category      MenuCategory @relation(fields: [categoryId], references: [id])
+  name          String
+  description   String?
+  price         Int
+  imageUrl      String?
+  isActive      Boolean      @default(true)
+  isSoldOut     Boolean      @default(false)
+  needsCooking  Boolean      @default(true)
+  showInKitchen Boolean      @default(true)
+  sortOrder     Int          @default(0)
+  createdAt     DateTime     @default(now())
+
+  optionGroups OptionGroup[]
+  orderItems   OrderItem[]
+
+  @@index([categoryId])
+}
+
+model OptionGroup {
+  id          String   @id @default(cuid())
+  menuItemId  String
+  menuItem    MenuItem @relation(fields: [menuItemId], references: [id])
+  name        String
+  required    Boolean  @default(false)
+  multiSelect Boolean  @default(false)
+  sortOrder   Int      @default(0)
+
+  choices OptionChoice[]
+
+  @@index([menuItemId])
+}
+
+model OptionChoice {
+  id         String      @id @default(cuid())
+  groupId    String
+  group      OptionGroup @relation(fields: [groupId], references: [id])
+  name       String
+  extraPrice Int         @default(0)
+  isActive   Boolean     @default(true)
+  sortOrder  Int         @default(0)
+
+  orderItemOptions OrderItemOption[]
+
+  @@index([groupId])
+}
+
+model Order {
+  id             String    @id @default(cuid())
+  tableSessionId String
+  tableSession   TableSession @relation(fields: [tableSessionId], references: [id])
+  status         String    @default("NEW") // NEW | ACCEPTED | PREPARING | READY | SERVED | REJECTED | CANCELLED
+  idempotencyKey String    @unique
+  note           String?
+  rejectReason   String?
+  cancelReason   String?
+  createdAt      DateTime  @default(now())
+  acceptedAt     DateTime?
+  preparingAt    DateTime?
+  readyAt        DateTime?
+  servedAt       DateTime?
+  cancelledAt    DateTime?
+
+  items OrderItem[]
+
+  @@index([tableSessionId, status])
+}
+
+model OrderItem {
+  id           String   @id @default(cuid())
+  orderId      String
+  order        Order    @relation(fields: [orderId], references: [id])
+  menuItemId   String
+  menuItem     MenuItem @relation(fields: [menuItemId], references: [id])
+  nameSnapshot String
+  unitPrice    Int
+  quantity     Int
+
+  options     OrderItemOption[]
+  allocations PaymentAllocation[]
+
+  @@index([orderId])
+}
+
+model OrderItemOption {
+  id                 String       @id @default(cuid())
+  orderItemId        String
+  orderItem          OrderItem    @relation(fields: [orderItemId], references: [id])
+  optionChoiceId     String
+  optionChoice       OptionChoice @relation(fields: [optionChoiceId], references: [id])
+  nameSnapshot       String
+  extraPriceSnapshot Int
+
+  @@index([orderItemId])
+}
+
+model Payment {
+  id                String       @id @default(cuid())
+  tableSessionId    String
+  tableSession      TableSession @relation(fields: [tableSessionId], references: [id])
+  kind              String // CHARGE | VOID | REFUND
+  method            String // CASH | CARD | OTHER | (ADMIN 정의 확장)
+  amount            Int
+  payerLabel        String?
+  reversedPaymentId String?
+  reversedPayment   Payment?     @relation("PaymentReversal", fields: [reversedPaymentId], references: [id])
+  reversals         Payment[]    @relation("PaymentReversal")
+  reason            String?
+  idempotencyKey    String       @unique
+  createdById       String
+  createdBy         StaffUser    @relation(fields: [createdById], references: [id])
+  createdAt         DateTime     @default(now())
+
+  allocations PaymentAllocation[]
+
+  @@index([tableSessionId])
+}
+
+model PaymentAllocation {
+  id          String    @id @default(cuid())
+  paymentId   String
+  payment     Payment   @relation(fields: [paymentId], references: [id])
+  orderItemId String
+  orderItem   OrderItem @relation(fields: [orderItemId], references: [id])
+  quantity    Int
+  amount      Int
+
+  @@index([orderItemId])
+  @@index([paymentId])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorType  String // STAFF | SYSTEM
+  actorId    String?
+  action     String // ORDER_CREATED, PAYMENT_VOIDED, ... (요구사항.md §14)
+  targetType String?
+  targetId   String?
+  metadata   String? // JSON string (민감정보 제외)
+  prevHash   String
+  hash       String
+  createdAt  DateTime @default(now())
+
+  @@index([action, createdAt])
+}
+
+model StaffCallRequest {
+  id             String       @id @default(cuid())
+  tableSessionId String
+  tableSession   TableSession @relation(fields: [tableSessionId], references: [id])
+  status         String       @default("PENDING") // PENDING | ACKED | DONE
+  createdAt      DateTime     @default(now())
+  ackedAt        DateTime?
+  doneAt         DateTime?
+
+  @@index([tableSessionId, status])
+}
