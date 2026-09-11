@@ -6,8 +6,19 @@ import PaymentMethodsPanel from "./admin/PaymentMethodsPanel.js";
 import PaymentsPanel from "./admin/PaymentsPanel.js";
 import RevenuePanel from "./admin/RevenuePanel.js";
 import SettingsPanel from "./admin/SettingsPanel.js";
+import BackupsPanel from "./admin/BackupsPanel.js";
 
-type Tab = "tables" | "menu" | "users" | "game-plans" | "logs" | "payment-methods" | "payments" | "revenue" | "settings";
+type Tab =
+  | "tables"
+  | "menu"
+  | "users"
+  | "game-plans"
+  | "logs"
+  | "payment-methods"
+  | "payments"
+  | "revenue"
+  | "settings"
+  | "backups";
 
 export default function AdminHome() {
   const { me } = useStaffMe("ADMIN");
@@ -20,7 +31,18 @@ export default function AdminHome() {
       <h1>ADMIN</h1>
       <nav style={{ display: "flex", gap: 8, margin: "16px 0", flexWrap: "wrap" }}>
         {(
-          ["tables", "menu", "users", "game-plans", "logs", "payment-methods", "payments", "revenue", "settings"] as Tab[]
+          [
+            "tables",
+            "menu",
+            "users",
+            "game-plans",
+            "logs",
+            "payment-methods",
+            "payments",
+            "revenue",
+            "settings",
+            "backups",
+          ] as Tab[]
         ).map((t) => (
           <button key={t} className="btn-secondary" onClick={() => setTab(t)} disabled={tab === t}>
             {t === "tables" && "테이블"}
@@ -32,6 +54,7 @@ export default function AdminHome() {
             {t === "payments" && "결제내역"}
             {t === "revenue" && "매출현황"}
             {t === "settings" && "운영설정"}
+            {t === "backups" && "백업"}
           </button>
         ))}
       </nav>
@@ -44,6 +67,7 @@ export default function AdminHome() {
       {tab === "payments" && <PaymentsPanel />}
       {tab === "revenue" && <RevenuePanel />}
       {tab === "settings" && <SettingsPanel />}
+      {tab === "backups" && <BackupsPanel />}
     </div>
   );
 }
