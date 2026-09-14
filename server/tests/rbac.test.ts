@@ -3,6 +3,12 @@ import request from "supertest";
 import { app, createStaff, loginAgent } from "./helpers.js";
 
 describe("RBAC", () => {
+  it("/healthz는 로그인 없이도 200을 반환한다 (Docker healthcheck용)", async () => {
+    const res = await request(app).get("/healthz");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true });
+  });
+
   it("로그인하지 않은 요청은 401을 받는다", async () => {
     const res = await request(app).get("/api/staff/admin/users");
     expect(res.status).toBe(401);

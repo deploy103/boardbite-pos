@@ -17,7 +17,7 @@
   "dependencies": {
     "@prisma/client": "^5.20.0",
     "bcryptjs": "^2.4.3",
-    "cookie": "^0.6.0",
+    "cookie": "^0.7.2",
     "cookie-parser": "^1.4.6",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
@@ -25,7 +25,9 @@
     "express-rate-limit": "^7.4.0",
     "express-session": "^1.18.0",
     "helmet": "^7.1.0",
+    "prisma": "^5.20.0",
     "socket.io": "^4.7.5",
+    "tsx": "^4.19.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
@@ -38,9 +40,7 @@
     "@types/node": "^20.14.0",
     "@types/supertest": "^6.0.2",
     "dotenv-cli": "^7.4.2",
-    "prisma": "^5.20.0",
     "supertest": "^7.0.0",
-    "tsx": "^4.19.0",
     "typescript": "^5.6.0",
     "vitest": "^2.1.0"
   },
