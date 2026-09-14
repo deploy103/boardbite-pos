@@ -45,3 +45,11 @@ test-results/
 playwright-report/
 blob-report/
 playwright/.cache/
+
+# 내부 개발 문서(로컬 작업용, GitHub에는 올리지 않음 — README.md만 공개 문서로 유지)
+/docs/
+/AGENTS.md
+/DEVLOG.template.md
+/RESEARCH.template.md
+/개발프롬프트.md
+/요구사항.md
