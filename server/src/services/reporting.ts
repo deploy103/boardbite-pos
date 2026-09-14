@@ -34,11 +34,21 @@ export interface RevenueSummary {
  * ADMIN 대시보드 매출 현황. 전부 Payment/Order 원장을 그대로 집계하며 별도 캐시 테이블을 두지 않는다
  * (docs/ARCHITECTURE.md §4의 "항상 파생 계산" 원칙을 리포팅에도 동일하게 적용).
  *
- * `since`를 주면 그 시각 이후 생성된 결제/주문만 집계한다(마감 리포트 등에서 사용).
+ * `since`/`until`을 주면 그 구간에 생성된 결제/주문만 집계한다(마감 리포트 등에서 사용).
  */
-export async function computeRevenueSummary(since?: Date): Promise<RevenueSummary> {
+export async function computeRevenueSummary(since?: Date, until?: Date): Promise<RevenueSummary> {
+  const createdAtRange =
+    since || until
+      ? {
+          createdAt: {
+            ...(since ? { gte: since } : {}),
+            ...(until ? { lte: until } : {}),
+          },
+        }
+      : undefined;
+
   const payments = await prisma.payment.findMany({
-    where: since ? { createdAt: { gte: since } } : undefined,
+    where: createdAtRange,
   });
   const byIdInWindow = new Map(payments.map((p) => [p.id, p]));
 
@@ -77,7 +87,7 @@ export async function computeRevenueSummary(since?: Date): Promise<RevenueSummar
   }
 
   const orders = await prisma.order.findMany({
-    where: since ? { createdAt: { gte: since } } : undefined,
+    where: createdAtRange,
     include: { items: { include: { options: true } } },
   });
 

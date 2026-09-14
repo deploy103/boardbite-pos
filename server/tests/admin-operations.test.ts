@@ -132,6 +132,22 @@ describe("매출 현황 및 결제 내역 조회 (ADMIN)", () => {
     expect(Array.isArray(res.body.summary.menuSales)).toBe(true);
   });
 
+  it("since/until로 매출 조회 구간을 제한할 수 있다", async () => {
+    const admin = await adminAgent();
+    const future = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    const past = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+    const withinRange = await admin.get(`/api/staff/admin/revenue?until=${encodeURIComponent(future.toISOString())}`);
+    expect(withinRange.status).toBe(200);
+    const all = await admin.get("/api/staff/admin/revenue");
+    expect(withinRange.body.summary.totalRevenue).toBe(all.body.summary.totalRevenue);
+
+    const beforeAnyData = await admin.get(`/api/staff/admin/revenue?until=${encodeURIComponent(past.toISOString())}`);
+    expect(beforeAnyData.status).toBe(200);
+    expect(beforeAnyData.body.summary.byMethod).toEqual([]);
+    expect(beforeAnyData.body.summary.menuSales).toEqual([]);
+  });
+
   it("매출 CSV와 감사로그 CSV를 내보낼 수 있다", async () => {
     const admin = await adminAgent();
     const revenueCsv = await admin.get("/api/staff/admin/export/revenue.csv");

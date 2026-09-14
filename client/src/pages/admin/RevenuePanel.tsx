@@ -28,7 +28,9 @@ function Bar({ label, value, max, valueLabel }: { label: string; value: number; 
 
 export default function RevenuePanel() {
   const [summary, setSummary] = useState<RevenueSummary | null>(null);
-  const [range, setRange] = useState<"today" | "all">("all");
+  const [range, setRange] = useState<"today" | "all" | "custom">("all");
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
   const { error, setError, wrap } = useErrorBanner();
 
   const load = (r: "today" | "all") =>
@@ -44,6 +46,24 @@ export default function RevenuePanel() {
       setRange(r);
     })();
 
+  const loadCustomRange = () =>
+    wrap(async () => {
+      const params = new URLSearchParams();
+      if (fromDate) {
+        const since = new Date(fromDate);
+        since.setHours(0, 0, 0, 0);
+        params.set("since", since.toISOString());
+      }
+      if (toDate) {
+        const until = new Date(toDate);
+        until.setHours(23, 59, 59, 999);
+        params.set("until", until.toISOString());
+      }
+      const d = await api.get(`/api/staff/admin/revenue?${params.toString()}`);
+      setSummary(d.summary);
+      setRange("custom");
+    })();
+
   useEffect(() => {
     load("all");
   }, []);
@@ -55,12 +75,37 @@ export default function RevenuePanel() {
   return (
     <section>
       <h2>매출 현황</h2>
-      <div style={{ display: "flex", gap: 8 }}>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
         <button className="btn-secondary" onClick={() => load("today")} disabled={range === "today"}>
           오늘
         </button>
         <button className="btn-secondary" onClick={() => load("all")} disabled={range === "all"}>
           전체 기간
+        </button>
+        <label className="field-label" htmlFor="revenue-from-date">
+          시작일
+        </label>
+        <input
+          id="revenue-from-date"
+          className="field"
+          type="date"
+          value={fromDate}
+          onChange={(e) => setFromDate(e.target.value)}
+          style={{ width: "auto" }}
+        />
+        <label className="field-label" htmlFor="revenue-to-date">
+          종료일
+        </label>
+        <input
+          id="revenue-to-date"
+          className="field"
+          type="date"
+          value={toDate}
+          onChange={(e) => setToDate(e.target.value)}
+          style={{ width: "auto" }}
+        />
+        <button className="btn-secondary" onClick={loadCustomRange} disabled={!fromDate && !toDate}>
+          기간 조회
         </button>
       </div>
 
