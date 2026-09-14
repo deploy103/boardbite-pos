@@ -1,0 +1,33 @@
+node_modules
+**/node_modules
+.git
+.github
+.claude
+
+# 소스가 아닌 로컬 산출물 — 이미지 안에서 새로 빌드한다.
+server/dist
+client/dist
+server/backups
+server/prisma/*.db
+server/prisma/*.db-journal
+server/prisma/*.db-wal
+server/prisma/*.db-shm
+server/prisma/data
+
+# e2e는 이미지에 필요 없다(package.json만 npm ci 캐싱용으로 별도 복사).
+e2e/tests
+e2e/scripts
+e2e/playwright.config.ts
+e2e/test-results
+e2e/playwright-report
+e2e/playwright/.cache
+
+# 문서/비밀값
+docs
+*.md
+.env
+.env.*
+!.env.example
+
+*.log
+coverage

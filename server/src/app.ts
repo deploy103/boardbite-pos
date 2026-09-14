@@ -39,6 +39,11 @@ export function createApp() {
     }),
   );
 
+  // Docker healthcheck / 리버스 프록시 업스트림 헬스체크용 — 세션/DB 접근 없이 즉시 응답.
+  app.get("/healthz", (_req, res) => {
+    res.status(200).json({ ok: true });
+  });
+
   app.use(express.json({ limit: "200kb" }));
   app.use(cookieParser());
 

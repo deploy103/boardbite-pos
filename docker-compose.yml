@@ -1,0 +1,29 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: boardbite-pos:latest
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # 아래 3개는 로컬 개발용 .env 값과 무관하게 컨테이너 배포 기준으로 고정한다.
+      # (NODE_ENV=production이어야 세션 쿠키가 정상 동작 — 앞단 Nginx가 HTTPS를 종단하고
+      #  X-Forwarded-Proto를 넘겨주는 구성을 전제로 함. server/src/app.ts의 `trust proxy` 참고.)
+      NODE_ENV: production
+      PORT: "3000"
+      DATABASE_URL: "file:/app/server/prisma/data/boardbite.db?connection_limit=1"
+    ports:
+      - "${HOST_PORT:-3000}:3000"
+    volumes:
+      # SQLite DB 파일과 백업 파일을 컨테이너 밖(호스트)에 영속화한다.
+      # `docker compose down` 후 다시 `up`해도 데이터가 유지된다.
+      - ./data/db:/app/server/prisma/data
+      - ./data/backups:/app/server/backups
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3000/healthz',(r)=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

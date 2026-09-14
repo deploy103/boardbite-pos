@@ -2,7 +2,7 @@
 
 학교 반 부스에서 운영하는 보드게임 카페형 행사를 위한 **테이블오더 + KDS(주방) + POS + 정산** 통합 시스템.
 
-> 인증/RBAC/테이블/메뉴/주문(Phase 2), 주방 KDS(Phase 3), 서빙(Phase 4), 부분/복합/더치/상품별 결제와 정산(Phase 5), 결제수단·운영설정·매출현황·백업 등 관리자 고도화(Phase 6)까지 구현되어 있습니다. 남은 것은 안정화(Phase 7: 실기기 테스트, E2E 자동화, 운영 매뉴얼)입니다. 진행 상황은 [`docs/DEVLOG.md`](docs/DEVLOG.md)와 [`docs/HANDOFF.md`](docs/HANDOFF.md)에서 확인할 수 있습니다.
+> 인증/RBAC/테이블/메뉴/주문(Phase 2), 주방 KDS(Phase 3), 서빙(Phase 4), 부분/복합/더치/상품별 결제와 정산(Phase 5), 결제수단·운영설정·매출현황·백업 등 관리자 고도화(Phase 6), 안정화(Phase 7)까지 구현되어 있습니다.
 
 ## 운영 흐름 요약
 
@@ -12,23 +12,9 @@
 → 잔액 0 → 고객 세션 폐기 → 테이블 자동 CLOSE
 ```
 
-## 문서
-
-| 문서 | 설명 |
-|---|---|
-| [AGENTS.md](AGENTS.md) | 개발 에이전트 운영 규칙 |
-| [요구사항.md](요구사항.md) | 전체 기능 요구사항 |
-| [docs/RESEARCH.md](docs/RESEARCH.md) | 벤치마크 조사 (OKPOS/배민/KDS/UX/보안) |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 아키텍처, 데이터 모델, 상태 머신 |
-| [docs/SECURITY.md](docs/SECURITY.md) | 위협 모델 및 보안 대응 |
-| [docs/TEST-PLAN.md](docs/TEST-PLAN.md) | 테스트 계획 |
-| [docs/OPERATIONS.md](docs/OPERATIONS.md) | 부스 운영 매뉴얼 |
-| [docs/HANDOFF.md](docs/HANDOFF.md) | 다음 작업자를 위한 인수인계 |
-| [docs/adr/](docs/adr/) | 아키텍처 결정 기록 (ADR) |
-
 ## 기술 스택
 
-Node.js(TypeScript) + Express + Prisma + SQLite + React(Vite) + Socket.IO. 선택 이유는 [`docs/adr/0001-tech-stack.md`](docs/adr/0001-tech-stack.md) 참고.
+Node.js(TypeScript) + Express + Prisma + SQLite + React(Vite) + Socket.IO.
 
 ## 로컬 실행
 
@@ -41,7 +27,6 @@ npm install
 cp .env.example .env
 # .env를 열어 ADMINID/ADMINPASSWORD 등 값과 SESSION_SECRET을 실제 값으로 채운다.
 # DATABASE_URL은 반드시 ?connection_limit=1을 포함해야 한다 — 결제 동시성 제어의 핵심 전제다.
-# (이유: docs/adr/0005-sqlite-write-concurrency.md)
 
 # 최초 1회: DB 마이그레이션 + 부트스트랩 계정 시드
 npm run prisma:migrate --workspace server
@@ -80,6 +65,23 @@ cd .. && npm run test:e2e
 ```
 
 클라이언트 빌드 + 격리된 DB(`server/prisma/e2e.db`) + 실제 서버 기동까지 자동으로 처리한다(`e2e/scripts/prepare-and-start.mjs`). 여러 역할(FRONT/POS/SERVING/손님)의 실제 브라우저 흐름을 검증한다.
+
+## Docker로 서버에 배포
+
+```bash
+git clone <저장소 URL> && cd Class_Store_Kiosk
+cp .env.example .env   # 값 채우기 (특히 ADMINID/PW류, SESSION_SECRET)
+docker compose up -d --build
+```
+
+빌드, DB 마이그레이션, 부트스트랩 계정 시드까지 이 한 번의 명령으로 끝난다.
+
+- SQLite DB와 백업 파일은 `./data/db`, `./data/backups`에 저장되어 컨테이너를 내렸다 올려도 유지된다.
+- `curl http://localhost:${HOST_PORT:-3000}/healthz` → `{"ok":true}`면 정상 기동된 것이다.
+- 세션 쿠키는 `NODE_ENV=production`에서 `Secure` 속성이 강제되므로, **HTTPS를 종단하는 리버스 프록시(Nginx 등)
+  뒤에서 이 컨테이너로 프록시하는 구성**을 전제로 한다. 프록시 없이 평문 HTTP로 직접 노출하면 로그인이 되지 않는다.
+- 포트를 바꾸려면 `.env`에 `HOST_PORT=<포트>`를 추가한다(컨테이너 내부 포트는 항상 3000).
+- 코드 업데이트 후 재배포: `git pull && docker compose up -d --build` (마이그레이션/시드는 멱등이라 반복 실행해도 안전).
 
 ## 기본 계정 (부트스트랩)
 
