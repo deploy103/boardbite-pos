@@ -13,6 +13,12 @@ import { toCsv } from "../services/csv.js";
 export const adminRouter = Router();
 adminRouter.use(requireRole("ADMIN"));
 
+function parseDateQueryParam(value: unknown): Date | undefined {
+  if (typeof value !== "string") return undefined;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+}
+
 // ---------- 사용자 관리 ----------
 
 adminRouter.get("/users", async (_req, res) => {
@@ -486,9 +492,9 @@ adminRouter.get("/payments", async (req, res) => {
 // ---------- 매출 현황 ----------
 
 adminRouter.get("/revenue", async (req, res) => {
-  const sinceParam = typeof req.query.since === "string" ? new Date(req.query.since) : undefined;
-  const since = sinceParam && !Number.isNaN(sinceParam.getTime()) ? sinceParam : undefined;
-  const summary = await computeRevenueSummary(since);
+  const since = parseDateQueryParam(req.query.since);
+  const until = parseDateQueryParam(req.query.until);
+  const summary = await computeRevenueSummary(since, until);
   res.json({ summary });
 });
 
@@ -611,9 +617,9 @@ adminRouter.get("/export/audit-logs.csv", async (req, res) => {
 // ---------- 매출 CSV 내보내기 ----------
 
 adminRouter.get("/export/revenue.csv", async (req, res) => {
-  const sinceParam = typeof req.query.since === "string" ? new Date(req.query.since) : undefined;
-  const since = sinceParam && !Number.isNaN(sinceParam.getTime()) ? sinceParam : undefined;
-  const summary = await computeRevenueSummary(since);
+  const since = parseDateQueryParam(req.query.since);
+  const until = parseDateQueryParam(req.query.until);
+  const summary = await computeRevenueSummary(since, until);
 
   const rows: (string | number)[][] = [
     ["총매출", summary.totalRevenue],
