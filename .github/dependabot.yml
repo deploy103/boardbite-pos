@@ -1,0 +1,27 @@
+# 요구사항2.md §8 — 공급망 관리.
+# 주 1회만 열어 PR 폭주를 막고, 패치 업데이트는 묶어서 하나의 PR로 받는다.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      # 패치/마이너는 묶어서 한 번에 검토한다. 메이저는 개별 PR로 와서 변경점을 따로 본다.
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+    labels:
+      - dependencies
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies

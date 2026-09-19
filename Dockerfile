@@ -40,9 +40,18 @@ RUN npm prune --omit=dev
 # ---------- 런타임 ----------
 FROM base AS runtime
 ENV NODE_ENV=production
-COPY --from=build /app /app
-COPY docker-entrypoint.sh /app/docker-entrypoint.sh
-RUN chmod +x /app/docker-entrypoint.sh
+
+# 요구사항2.md §7.2 — 애플리케이션은 non-root로 실행한다.
+# node 이미지에 이미 있는 uid/gid 1000(node) 사용자를 그대로 쓴다. 호스트 bind mount의
+# 소유자도 1000:1000이어야 하며, README "배포" 절에 필요한 chown 명령을 안내한다.
+COPY --from=build --chown=root:root /app /app
+COPY --chown=root:root docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh \
+    # 애플리케이션 소스는 root 소유 + 읽기 전용으로 두고, 쓰기가 필요한 디렉터리만 node에게 넘긴다.
+    && mkdir -p /app/server/prisma/data /app/server/backups \
+    && chown -R node:node /app/server/prisma/data /app/server/backups
+
+USER node
 
 EXPOSE 3000
 ENTRYPOINT ["/app/docker-entrypoint.sh"]

@@ -1,17 +1,44 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../prisma.js";
-import { requireRole } from "../middleware/requireRole.js";
+import { staffGate, requireStepUp } from "../middleware/requireRole.js";
 import { hashPassword } from "../auth/password.js";
+import { validatePasswordPolicy } from "../env.js";
 import { generateToken } from "../services/tableToken.js";
 import { recordAuditLog, verifyAuditLogChain, purgeAuditLogs } from "../services/auditLog.js";
 import { getSettings, updateSettings } from "../services/settings.js";
 import { computeRevenueSummary } from "../services/reporting.js";
 import { createBackup, listBackups, getBackupFilePath } from "../services/backup.js";
 import { toCsv } from "../services/csv.js";
+import {
+  adminResetPassword,
+  updateStaffUser,
+  bumpAuthVersion,
+  StaffAccountError,
+} from "../services/staffAccount.js";
+import {
+  closeTable,
+  setTableEnabled,
+  evaluateCloseBlockers,
+  TableSessionError,
+} from "../services/tableSession.js";
+import {
+  computeClosingPreview,
+  createClosingSettlement,
+  ClosingError,
+} from "../services/closing.js";
 
 export const adminRouter = Router();
-adminRouter.use(requireRole("ADMIN"));
+adminRouter.use(staffGate("ADMIN"));
+
+/** StaffAccountError / TableSessionError / ClosingError를 공통 응답으로 변환한다. */
+function sendDomainError(res: import("express").Response, err: unknown): boolean {
+  if (err instanceof StaffAccountError || err instanceof TableSessionError || err instanceof ClosingError) {
+    res.status(err.status).json({ error: err.message });
+    return true;
+  }
+  return false;
+}
 
 function parseDateQueryParam(value: unknown): Date | undefined {
   if (typeof value !== "string") return undefined;
@@ -31,6 +58,7 @@ adminRouter.get("/users", async (_req, res) => {
       role: true,
       isActive: true,
       mustResetPassword: true,
+      mfaEnabled: true,
       isBootstrap: true,
       lastLoginAt: true,
       createdAt: true,
@@ -41,15 +69,21 @@ adminRouter.get("/users", async (_req, res) => {
 
 const createUserSchema = z.object({
   username: z.string().min(3).max(50),
-  password: z.string().min(8).max(200),
+  password: z.string().min(1).max(200),
   displayName: z.string().min(1).max(100),
   role: z.enum(["ADMIN", "FRONT", "POS", "SERVING"]),
 });
 
+// 개인별 계정 생성(요구사항2.md §9.2). 길이/기본값 정책은 환경별 기준을 그대로 따른다.
 adminRouter.post("/users", async (req, res) => {
   const parsed = createUserSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "입력값이 올바르지 않습니다." });
+    return;
+  }
+  const policyProblem = validatePasswordPolicy(parsed.data.password, { username: parsed.data.username });
+  if (policyProblem) {
+    res.status(400).json({ error: policyProblem });
     return;
   }
   const exists = await prisma.staffUser.findUnique({ where: { username: parsed.data.username } });
@@ -67,7 +101,7 @@ adminRouter.post("/users", async (req, res) => {
   });
   await recordAuditLog({
     actorType: "STAFF",
-    actorId: req.session.staffUserId,
+    actorId: req.staff!.id,
     action: "USER_CREATED",
     targetType: "StaffUser",
     targetId: user.id,
@@ -82,49 +116,53 @@ const updateUserSchema = z.object({
   isActive: z.boolean().optional(),
 });
 
-adminRouter.patch("/users/:id", async (req, res) => {
+/**
+ * 사용자 정보 수정. role 변경/비활성화는 고위험 작업이므로 step-up 재인증을 요구하고
+ * (요구사항2.md §2.5.2), 실제 authVersion 증가·세션 무효화·감사 로그는 staffAccount 서비스가 담당한다.
+ */
+adminRouter.patch("/users/:id", requireStepUp, async (req, res) => {
   const parsed = updateUserSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "입력값이 올바르지 않습니다." });
     return;
   }
-  const target = await prisma.staffUser.findUnique({ where: { id: req.params.id } });
-  if (!target) {
-    res.status(404).json({ error: "존재하지 않는 사용자입니다." });
-    return;
-  }
-  const updated = await prisma.staffUser.update({ where: { id: target.id }, data: parsed.data });
-
-  if (parsed.data.role && parsed.data.role !== target.role) {
-    await recordAuditLog({
-      actorType: "STAFF",
-      actorId: req.session.staffUserId,
-      action: "USER_ROLE_CHANGED",
-      targetType: "StaffUser",
-      targetId: target.id,
-      metadata: { from: target.role, to: parsed.data.role },
+  try {
+    const updated = await updateStaffUser({
+      targetUserId: req.params.id,
+      actorId: req.staff!.id,
+      ...parsed.data,
     });
+    res.json({ id: updated.id });
+  } catch (err) {
+    if (!sendDomainError(res, err)) throw err;
   }
-  if (parsed.data.isActive === false && target.isActive) {
-    await recordAuditLog({
-      actorType: "STAFF",
-      actorId: req.session.staffUserId,
-      action: "USER_DISABLED",
-      targetType: "StaffUser",
-      targetId: target.id,
-    });
-  }
-  res.json({ id: updated.id });
 });
 
-const resetPasswordSchema = z.object({ newPassword: z.string().min(8).max(200) });
+const resetPasswordSchema = z.object({ newPassword: z.string().min(1).max(200) });
 
-adminRouter.post("/users/:id/reset-password", async (req, res) => {
+adminRouter.post("/users/:id/reset-password", requireStepUp, async (req, res) => {
   const parsed = resetPasswordSchema.safeParse(req.body);
   if (!parsed.success) {
-    res.status(400).json({ error: "비밀번호는 8자 이상이어야 합니다." });
+    res.status(400).json({ error: "새 비밀번호를 입력해 주세요." });
     return;
   }
+  try {
+    await adminResetPassword({
+      targetUserId: req.params.id,
+      newPassword: parsed.data.newPassword,
+      actorId: req.staff!.id,
+    });
+    res.json({ ok: true });
+  } catch (err) {
+    if (!sendDomainError(res, err)) throw err;
+  }
+});
+
+/**
+ * 대상 계정의 TOTP MFA 해제(요구사항2.md §2.5.2 "TOTP disable/reset").
+ * 인증 앱을 잃어버린 관리자를 복구하는 유일한 경로이므로 step-up이 반드시 필요하다.
+ */
+adminRouter.post("/users/:id/disable-mfa", requireStepUp, async (req, res) => {
   const target = await prisma.staffUser.findUnique({ where: { id: req.params.id } });
   if (!target) {
     res.status(404).json({ error: "존재하지 않는 사용자입니다." });
@@ -132,12 +170,14 @@ adminRouter.post("/users/:id/reset-password", async (req, res) => {
   }
   await prisma.staffUser.update({
     where: { id: target.id },
-    data: { passwordHash: await hashPassword(parsed.data.newPassword), mustResetPassword: true },
+    data: { mfaEnabled: false, mfaSecretEncrypted: null },
   });
+  // 기존 세션을 전부 끊어, 해제 사실을 모르는 세션이 계속 살아있지 않게 한다.
+  await bumpAuthVersion(target.id);
   await recordAuditLog({
     actorType: "STAFF",
-    actorId: req.session.staffUserId,
-    action: "USER_PASSWORD_RESET",
+    actorId: req.staff!.id,
+    action: "USER_MFA_DISABLED",
     targetType: "StaffUser",
     targetId: target.id,
   });
@@ -169,9 +209,13 @@ adminRouter.post("/tables", async (req, res) => {
   res.status(201).json({ table });
 });
 
+/**
+ * 요구사항2.md §3.2 — status를 직접 세팅하는 경로를 스키마에서 제거했다.
+ * OPEN/SETTLING/AVAILABLE 전이는 오직 상태 머신(openTable / closeTable / 자동 정산)만 수행하고,
+ * 활성/비활성은 아래 전용 엔드포인트로만 바꾼다.
+ */
 const updateTableSchema = z.object({
   name: z.string().max(50).optional(),
-  status: z.enum(["DISABLED", "AVAILABLE", "OPEN", "SETTLING"]).optional(),
   sortOrder: z.number().int().optional(),
   ordersLocked: z.boolean().optional(),
   paymentsLocked: z.boolean().optional(),
@@ -189,19 +233,11 @@ adminRouter.patch("/tables/:id", async (req, res) => {
     return;
   }
   const table = await prisma.table.update({ where: { id: req.params.id }, data: parsed.data });
-  if (parsed.data.status === "DISABLED") {
-    await recordAuditLog({
-      actorType: "STAFF",
-      actorId: req.session.staffUserId,
-      action: "TABLE_DISABLED",
-      targetType: "Table",
-      targetId: table.id,
-    });
-  }
+
   if (parsed.data.ordersLocked !== undefined && parsed.data.ordersLocked !== before.ordersLocked) {
     await recordAuditLog({
       actorType: "STAFF",
-      actorId: req.session.staffUserId,
+      actorId: req.staff!.id,
       action: "TABLE_ORDERS_LOCK_CHANGED",
       targetType: "Table",
       targetId: table.id,
@@ -211,7 +247,7 @@ adminRouter.patch("/tables/:id", async (req, res) => {
   if (parsed.data.paymentsLocked !== undefined && parsed.data.paymentsLocked !== before.paymentsLocked) {
     await recordAuditLog({
       actorType: "STAFF",
-      actorId: req.session.staffUserId,
+      actorId: req.staff!.id,
       action: "TABLE_PAYMENTS_LOCK_CHANGED",
       targetType: "Table",
       targetId: table.id,
@@ -221,6 +257,67 @@ adminRouter.patch("/tables/:id", async (req, res) => {
   res.json({ table });
 });
 
+const setEnabledSchema = z.object({ enabled: z.boolean() });
+
+/** 테이블 사용 중지/재개. 사용 중(ACTIVE 세션)인 테이블은 중지할 수 없다. */
+adminRouter.post("/tables/:id/enabled", async (req, res) => {
+  const parsed = setEnabledSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "입력값이 올바르지 않습니다." });
+    return;
+  }
+  try {
+    const table = await setTableEnabled({
+      tableId: req.params.id,
+      enabled: parsed.data.enabled,
+      staffId: req.staff!.id,
+    });
+    res.json({ table });
+  } catch (err) {
+    if (!sendDomainError(res, err)) throw err;
+  }
+});
+
+/** 강제 종료 전에 "무엇을 남긴 채 닫는 것인지"를 운영자에게 먼저 보여준다. */
+adminRouter.get("/tables/:id/force-close-preview", async (req, res) => {
+  const session = await prisma.tableSession.findFirst({
+    where: { tableId: req.params.id, status: { in: ["ACTIVE", "PAID_PENDING_SERVICE"] } },
+    orderBy: { openedAt: "desc" },
+  });
+  if (!session) {
+    res.status(404).json({ error: "진행 중인 테이블 세션이 없어요." });
+    return;
+  }
+  const blockers = await evaluateCloseBlockers(session.id);
+  res.json({ tableSessionId: session.id, blockers });
+});
+
+const forceCloseSchema = z.object({ reason: z.string().min(1).max(200) });
+
+/**
+ * ADMIN 강제 종료(요구사항2.md §3.1). FRONT의 일반 종료와 분리된 별도 경로이며
+ * ADMIN 권한 + step-up 재인증 + 사유를 모두 요구한다. 남은 금액/미서빙 주문 현황은
+ * closeTable이 감사 로그 metadata에 통째로 기록한다 — 삭제가 아니라 "기록이 남는 종료"다.
+ */
+adminRouter.post("/tables/:id/force-close", requireStepUp, async (req, res) => {
+  const parsed = forceCloseSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "강제 종료 사유를 입력해 주세요." });
+    return;
+  }
+  try {
+    const session = await closeTable({
+      tableId: req.params.id,
+      closedById: req.staff!.id,
+      reason: parsed.data.reason,
+      force: true,
+    });
+    res.json({ session });
+  } catch (err) {
+    if (!sendDomainError(res, err)) throw err;
+  }
+});
+
 adminRouter.post("/tables/:id/rotate-slug", async (req, res) => {
   const table = await prisma.table.update({
     where: { id: req.params.id },
@@ -228,7 +325,7 @@ adminRouter.post("/tables/:id/rotate-slug", async (req, res) => {
   });
   await recordAuditLog({
     actorType: "STAFF",
-    actorId: req.session.staffUserId,
+    actorId: req.staff!.id,
     action: "TABLE_TOKEN_ROTATED",
     targetType: "Table",
     targetId: table.id,
@@ -307,7 +404,7 @@ adminRouter.patch("/menu/items/:id", async (req, res) => {
   if (parsed.data.price !== undefined && parsed.data.price !== before.price) {
     await recordAuditLog({
       actorType: "STAFF",
-      actorId: req.session.staffUserId,
+      actorId: req.staff!.id,
       action: "MENU_PRICE_CHANGED",
       targetType: "MenuItem",
       targetId: item.id,
@@ -317,7 +414,7 @@ adminRouter.patch("/menu/items/:id", async (req, res) => {
   if (parsed.data.isSoldOut !== undefined && parsed.data.isSoldOut !== before.isSoldOut) {
     await recordAuditLog({
       actorType: "STAFF",
-      actorId: req.session.staffUserId,
+      actorId: req.staff!.id,
       action: "MENU_SOLD_OUT",
       targetType: "MenuItem",
       targetId: item.id,
@@ -343,7 +440,11 @@ adminRouter.post("/menu/items/:id/option-groups", async (req, res) => {
   res.status(201).json({ group });
 });
 
-const createOptionChoiceSchema = z.object({ name: z.string().min(1).max(50), extraPrice: z.number().int().default(0) });
+// 의도적인 마이너스 가격 옵션 기능은 없다 — 음수 추가금은 곧 우회 할인이 되므로 막는다(요구사항2.md §3.3).
+const createOptionChoiceSchema = z.object({
+  name: z.string().min(1).max(50),
+  extraPrice: z.number().int().min(0).default(0),
+});
 
 adminRouter.post("/menu/option-groups/:id/choices", async (req, res) => {
   const parsed = createOptionChoiceSchema.safeParse(req.body);
@@ -423,7 +524,7 @@ adminRouter.post("/payment-methods", async (req, res) => {
   const method = await prisma.paymentMethod.create({ data: { ...parsed.data, isCash: false } });
   await recordAuditLog({
     actorType: "STAFF",
-    actorId: req.session.staffUserId,
+    actorId: req.staff!.id,
     action: "PAYMENT_METHOD_CREATED",
     targetType: "PaymentMethod",
     targetId: method.id,
@@ -527,7 +628,7 @@ adminRouter.patch("/settings", async (req, res) => {
     res.status(400).json({ error: "지연 기준 시간은 임박 기준 시간보다 커야 해요." });
     return;
   }
-  const settings = await updateSettings(parsed.data, req.session.staffUserId!);
+  const settings = await updateSettings(parsed.data, req.staff!.id);
   res.json({ settings });
 });
 
@@ -584,7 +685,7 @@ const purgeAuditLogsSchema = z.object({
 
 // 요구사항.md §13.5 "로그 삭제" — 이중 확인은 클라이언트가 확인 대화상자로 처리하고,
 // 서버는 confirm:true를 명시적으로 요구해 실수로 인한 대량 삭제를 최소화한다.
-adminRouter.post("/audit-logs/purge", async (req, res) => {
+adminRouter.post("/audit-logs/purge", requireStepUp, async (req, res) => {
   const parsed = purgeAuditLogsSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "삭제 기준 날짜와 확인이 필요해요." });
@@ -595,7 +696,7 @@ adminRouter.post("/audit-logs/purge", async (req, res) => {
     res.status(400).json({ error: "날짜 형식이 올바르지 않아요." });
     return;
   }
-  const result = await purgeAuditLogs(beforeDate, req.session.staffUserId!);
+  const result = await purgeAuditLogs(beforeDate, req.staff!.id);
   res.json({ result });
 });
 
@@ -646,19 +747,20 @@ adminRouter.get("/export/revenue.csv", async (req, res) => {
 // ---------- DB 백업 ----------
 
 adminRouter.get("/backups", async (_req, res) => {
-  res.json({ backups: listBackups() });
+  // listBackups는 체크섬 계산 때문에 비동기다 — await하지 않으면 Promise가 그대로 직렬화된다.
+  res.json({ backups: await listBackups() });
 });
 
-adminRouter.post("/backups", async (req, res) => {
+adminRouter.post("/backups", requireStepUp, async (req, res) => {
   try {
-    const backup = await createBackup(req.session.staffUserId);
+    const backup = await createBackup(req.staff!.id);
     res.status(201).json({ backup });
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : "백업 중 오류가 발생했어요." });
   }
 });
 
-adminRouter.get("/backups/:filename", async (req, res) => {
+adminRouter.get("/backups/:filename", requireStepUp, async (req, res) => {
   const filePath = getBackupFilePath(req.params.filename);
   if (!filePath) {
     res.status(404).json({ error: "존재하지 않는 백업 파일이에요." });
@@ -666,9 +768,89 @@ adminRouter.get("/backups/:filename", async (req, res) => {
   }
   await recordAuditLog({
     actorType: "STAFF",
-    actorId: req.session.staffUserId,
+    actorId: req.staff!.id,
     action: "DB_BACKUP_DOWNLOADED",
     metadata: { filename: req.params.filename },
   });
   res.download(filePath, req.params.filename);
+});
+
+// ---------- 영업 마감 / 정산 (요구사항2.md §9.1) ----------
+
+adminRouter.get("/closing/preview", async (req, res) => {
+  const since = parseDateQueryParam(req.query.since);
+  const until = parseDateQueryParam(req.query.until);
+  const preview = await computeClosingPreview(since, until);
+  res.json({ preview });
+});
+
+adminRouter.get("/closing/history", async (_req, res) => {
+  const settlements = await prisma.closingSettlement.findMany({
+    orderBy: { closedAt: "desc" },
+    take: 50,
+    include: { closedBy: { select: { displayName: true } } },
+  });
+  res.json({ settlements });
+});
+
+const createClosingSchema = z.object({
+  actualCash: z.number().int().min(0),
+  note: z.string().max(500).optional(),
+  overrideReason: z.string().max(200).optional(),
+});
+
+/**
+ * 마감 확정. 금전 원장을 확정하는 작업이므로 step-up을 요구한다.
+ * 미정산 테이블이 남았는데도 강행하려면 overrideReason이 필수다(서비스에서 검증).
+ */
+adminRouter.post("/closing", requireStepUp, async (req, res) => {
+  const parsed = createClosingSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "실제 현금 금액을 확인해 주세요." });
+    return;
+  }
+  try {
+    const settlement = await createClosingSettlement({
+      actualCash: parsed.data.actualCash,
+      note: parsed.data.note,
+      overrideReason: parsed.data.overrideReason,
+      closedById: req.staff!.id,
+    });
+    res.status(201).json({ settlement });
+  } catch (err) {
+    if (!sendDomainError(res, err)) throw err;
+  }
+});
+
+adminRouter.get("/export/closing.csv", async (req, res) => {
+  const since = parseDateQueryParam(req.query.since);
+  const until = parseDateQueryParam(req.query.until);
+  const preview = await computeClosingPreview(since, until);
+
+  const rows: (string | number)[][] = [
+    ["집계 시작", preview.openedAt.toISOString()],
+    ["집계 종료", preview.closedAt.toISOString()],
+    ["총 주문 금액", preview.totalOrderAmount],
+    ["실제 매출", preview.totalRevenue],
+    ["총 할인", preview.totalDiscount],
+    ["VOID 합계", preview.totalVoid],
+    ["REFUND 합계", preview.totalRefund],
+    ["현금 예상액", preview.expectedCash],
+    ["취소 주문 수", preview.cancelledOrderCount],
+    ["거부 주문 수", preview.rejectedOrderCount],
+    [],
+    ["결제수단", "매출"],
+    ...preview.byMethod.map((m) => [m.method, m.amount]),
+    [],
+    ["미정산 테이블", "상태", "남은 금액"],
+    ...preview.unsettledTables.map((t) => [t.tableNumber, t.status, t.remainingAmount]),
+    [],
+    ["강제 종료 테이블", "종료 시각", "사유"],
+    ...preview.forceClosedSessions.map((s) => [s.tableNumber, s.closedAt?.toISOString() ?? "", s.reason ?? ""]),
+  ];
+
+  const csv = toCsv(["항목", "값1", "값2"], rows.map((r) => [r[0] ?? "", r[1] ?? "", r[2] ?? ""]));
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", 'attachment; filename="closing.csv"');
+  res.send(csv);
 });

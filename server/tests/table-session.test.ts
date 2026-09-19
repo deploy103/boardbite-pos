@@ -78,7 +78,7 @@ describe("이용권(GameTimePlan) 연장 누적 계산", () => {
     const staffId = await getStaffIdByUsername(username);
     const plan20 = await createGameTimePlan(20, 1000);
 
-    const session = await openTable({ tableId: table.id, openedById: staffId, gameTimePlanId: plan20.id });
+    const { session } = await openTable({ tableId: table.id, openedById: staffId, gameTimePlanId: plan20.id });
 
     const firstUsage = await prisma.tableGameUsage.findFirstOrThrow({ where: { tableSessionId: session.id } });
 
@@ -95,7 +95,7 @@ describe("이용권(GameTimePlan) 연장 누적 계산", () => {
     const staffId = await getStaffIdByUsername(username);
     const plan10 = await createGameTimePlan(10, 500);
 
-    const session = await openTable({ tableId: table.id, openedById: staffId, gameTimePlanId: plan10.id });
+    const { session } = await openTable({ tableId: table.id, openedById: staffId, gameTimePlanId: plan10.id });
     await closeTable({ tableId: table.id, closedById: staffId });
 
     await expect(extendGameTime({ tableSessionId: session.id, planId: plan10.id, staffId })).rejects.toBeInstanceOf(

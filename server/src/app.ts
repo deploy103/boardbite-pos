@@ -1,4 +1,5 @@
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import helmet from "helmet";
@@ -6,6 +7,7 @@ import cookieParser from "cookie-parser";
 import session from "express-session";
 import rateLimit from "express-rate-limit";
 import { env, isProduction } from "./env.js";
+import { prisma } from "./prisma.js";
 import { PrismaSessionStore } from "./auth/prismaSessionStore.js";
 import { requireCustomHeader } from "./middleware/csrf.js";
 import { authRouter } from "./routes/auth.routes.js";
@@ -39,9 +41,27 @@ export function createApp() {
     }),
   );
 
-  // Docker healthcheck / 리버스 프록시 업스트림 헬스체크용 — 세션/DB 접근 없이 즉시 응답.
+  // Docker healthcheck / 리버스 프록시 업스트림 헬스체크용 — 세션/DB 접근 없이 즉시 응답(liveness).
   app.get("/healthz", (_req, res) => {
     res.status(200).json({ ok: true });
+  });
+
+  // readiness(요구사항2.md §9.4) — DB까지 실제로 응답해야 트래픽을 받을 준비가 된 것으로 본다.
+  // 어느 쪽도 버전/경로/스키마 같은 내부 정보를 노출하지 않는다.
+  app.get("/readyz", async (_req, res) => {
+    try {
+      await prisma.$queryRaw`SELECT 1`;
+      res.status(200).json({ ok: true });
+    } catch {
+      res.status(503).json({ ok: false });
+    }
+  });
+
+  // 요청 추적 ID — 서버 로그와 클라이언트가 받은 오류 응답을 이어주는 유일한 연결고리다(§6.2).
+  app.use((req, res, next) => {
+    req.requestId = randomUUID();
+    res.setHeader("X-Request-Id", req.requestId);
+    next();
   });
 
   app.use(express.json({ limit: "200kb" }));
@@ -65,11 +85,49 @@ export function createApp() {
 
   app.use(requireCustomHeader);
 
-  const loginLimiter = rateLimit({ windowMs: 5 * 60 * 1000, limit: 20, standardHeaders: true, legacyHeaders: false });
-  const customerLimiter = rateLimit({ windowMs: 60 * 1000, limit: 60, standardHeaders: true, legacyHeaders: false });
+  const loginLimiter = rateLimit({
+    windowMs: 5 * 60 * 1000,
+    limit: env.STAFF_LOGIN_RATE_LIMIT_PER_5MIN,
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+  const customerLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    limit: env.CUSTOMER_RATE_LIMIT_PER_MIN,
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+
+  /**
+   * join code 무차별 대입 차단(요구사항2.md §2.2).
+   *
+   * 코드가 6자리(10^6)이므로 IP만으로 제한하면 한 테이블을 노린 공격을 충분히 늦추지 못한다.
+   * IP + 대상 테이블(slug) 조합을 키로 삼아, 같은 IP가 여러 테이블을 훑는 것도,
+   * 여러 요청이 한 테이블에 집중되는 것도 함께 제한한다.
+   */
+  const joinLimiter = rateLimit({
+    windowMs: 10 * 60 * 1000,
+    limit: 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => `${req.ip}:${req.params.slug ?? req.path}`,
+    message: { error: "입장 코드 시도가 너무 많아요. 잠시 후 다시 시도해 주세요." },
+  });
 
   app.use("/api/staff/login", loginLimiter);
   app.use("/api/customer", customerLimiter);
+  app.post("/api/customer/join/:slug", joinLimiter);
+
+  /**
+   * API 응답은 절대 캐시하지 않는다(요구사항2.md §6.1).
+   *
+   * 공유 단말/프록시가 이전 손님의 주문 내역이나 직원 화면을 그대로 되살리는 사고를 막는 것이
+   * 목적이므로, 민감 경로를 하나씩 열거하는 대신 /api 전체에 일괄 적용한다.
+   */
+  app.use("/api", (_req, res, next) => {
+    res.setHeader("Cache-Control", "no-store");
+    next();
+  });
 
   app.use("/api/staff", authRouter);
   app.use("/api/customer", customerRouter);
@@ -83,10 +141,29 @@ export function createApp() {
     res.sendFile(path.join(clientDist, "index.html"));
   });
 
-  app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  /**
+   * 마지막 안전망(요구사항2.md §6.2).
+   *
+   * 클라이언트에게는 stack trace / Prisma 오류 코드 / DB 경로 같은 내부 정보를 절대 주지 않고,
+   * 추적용 requestId만 함께 내려준다. 상세 내용은 서버 로그에서 같은 ID로 찾는다.
+   */
+  app.use((err: unknown, req: express.Request, res: express.Response, _next: express.NextFunction) => {
     // eslint-disable-next-line no-console
-    console.error(err);
-    res.status(500).json({ error: "서버 오류가 발생했습니다." });
+    console.error(`[${req.requestId ?? "-"}] ${req.method} ${req.originalUrl}`, err);
+    if (res.headersSent) return;
+
+    // body-parser 등 미들웨어가 붙이는 표준 HTTP 상태는 보존한다 — 본문 초과(413)나
+    // 잘못된 JSON(400)까지 500으로 뭉뚱그리면 호출자가 재시도 여부를 판단할 수 없다.
+    const status = typeof (err as { status?: unknown })?.status === "number" ? (err as { status: number }).status : 500;
+    const clientError = status >= 400 && status < 500;
+
+    res.status(clientError ? status : 500).json({
+      // 4xx라도 서버가 만든 문구만 내려보낸다(라이브러리 메시지에 내부 정보가 섞일 수 있다).
+      error: clientError
+        ? "요청을 처리할 수 없습니다. 입력값을 확인해 주세요."
+        : "서버 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.",
+      requestId: req.requestId,
+    });
   });
 
   return app;

@@ -1,13 +1,13 @@
 import { Router } from "express";
 import { prisma } from "../prisma.js";
-import { requireRole } from "../middleware/requireRole.js";
+import { staffGate } from "../middleware/requireRole.js";
 import { markServed, revertServedToReady, OrderStateError } from "../services/order.js";
 import { getSettings } from "../services/settings.js";
 import { recordAuditLog } from "../services/auditLog.js";
 import { appEvents, RealtimeEvent } from "../realtime.js";
 
 export const servingRouter = Router();
-servingRouter.use(requireRole("SERVING"));
+servingRouter.use(staffGate("SERVING"));
 
 const ORDER_WITH_TABLE_INCLUDE = {
   items: { include: { options: true } },
@@ -36,7 +36,7 @@ servingRouter.get("/recently-served", async (_req, res) => {
 
 servingRouter.post("/orders/:id/served", async (req, res) => {
   try {
-    const order = await markServed(req.params.id, req.session.staffUserId!);
+    const order = await markServed(req.params.id, req.staff!.id);
     res.json({ order });
   } catch (err) {
     if (err instanceof OrderStateError) {
@@ -54,7 +54,7 @@ servingRouter.post("/orders/:id/revert", async (req, res) => {
     return;
   }
   // 요구사항.md §2.4 "잘못 누른 서빙 완료 되돌리기(짧은 시간 또는 권한 필요)" — ADMIN은 시간 제한 없이 되돌릴 수 있다.
-  if (req.session.role !== "ADMIN" && order.servedAt) {
+  if (req.staff!.role !== "ADMIN" && order.servedAt) {
     const settings = await getSettings();
     const elapsedSeconds = (Date.now() - order.servedAt.getTime()) / 1000;
     if (elapsedSeconds > settings.servedRevertWindowSeconds) {
@@ -66,7 +66,7 @@ servingRouter.post("/orders/:id/revert", async (req, res) => {
   }
 
   try {
-    const updated = await revertServedToReady(req.params.id, req.session.staffUserId!);
+    const updated = await revertServedToReady(req.params.id, req.staff!.id);
     res.json({ order: updated });
   } catch (err) {
     if (err instanceof OrderStateError) {
@@ -88,41 +88,48 @@ servingRouter.get("/staff-calls", async (_req, res) => {
   res.json({ calls });
 });
 
+/**
+ * 호출 접수. 주문 상태 전이와 같은 이유로 조건부 updateMany를 쓴다(요구사항2.md §3.6) —
+ * 두 직원이 같은 호출을 동시에 집어도 한 명만 성공한다.
+ */
 servingRouter.post("/staff-calls/:id/ack", async (req, res) => {
-  const call = await prisma.staffCallRequest.findUnique({ where: { id: req.params.id } });
-  if (!call) {
-    res.status(404).json({ error: "존재하지 않는 호출이에요." });
-    return;
-  }
-  if (call.status !== "PENDING") {
-    res.status(409).json({ error: "이미 처리 중이거나 완료된 호출이에요." });
-    return;
-  }
-  const updated = await prisma.staffCallRequest.update({
-    where: { id: call.id },
+  const claimed = await prisma.staffCallRequest.updateMany({
+    where: { id: req.params.id, status: "PENDING" },
     data: { status: "ACKED", ackedAt: new Date() },
   });
-  appEvents.emit(RealtimeEvent.StaffCallRequested, { tableSessionId: call.tableSessionId, callId: call.id, status: "ACKED" });
+  if (claimed.count !== 1) {
+    const exists = await prisma.staffCallRequest.findUnique({ where: { id: req.params.id }, select: { id: true } });
+    res.status(exists ? 409 : 404).json({
+      error: exists ? "이미 처리 중이거나 완료된 호출이에요." : "존재하지 않는 호출이에요.",
+    });
+    return;
+  }
+  const updated = await prisma.staffCallRequest.findUniqueOrThrow({ where: { id: req.params.id } });
+  appEvents.emit(RealtimeEvent.StaffCallRequested, {
+    tableSessionId: updated.tableSessionId,
+    callId: updated.id,
+    status: "ACKED",
+  });
   res.json({ call: updated });
 });
 
 servingRouter.post("/staff-calls/:id/done", async (req, res) => {
-  const call = await prisma.staffCallRequest.findUnique({ where: { id: req.params.id } });
-  if (!call) {
-    res.status(404).json({ error: "존재하지 않는 호출이에요." });
-    return;
-  }
-  if (call.status === "DONE") {
-    res.status(409).json({ error: "이미 완료된 호출이에요." });
-    return;
-  }
-  const updated = await prisma.staffCallRequest.update({
-    where: { id: call.id },
+  const claimed = await prisma.staffCallRequest.updateMany({
+    where: { id: req.params.id, status: { in: ["PENDING", "ACKED"] } },
     data: { status: "DONE", doneAt: new Date() },
   });
+  if (claimed.count !== 1) {
+    const exists = await prisma.staffCallRequest.findUnique({ where: { id: req.params.id }, select: { id: true } });
+    res.status(exists ? 409 : 404).json({
+      error: exists ? "이미 완료된 호출이에요." : "존재하지 않는 호출이에요.",
+    });
+    return;
+  }
+  const call = await prisma.staffCallRequest.findUniqueOrThrow({ where: { id: req.params.id } });
+  const updated = call;
   await recordAuditLog({
     actorType: "STAFF",
-    actorId: req.session.staffUserId,
+    actorId: req.staff!.id,
     action: "STAFF_CALL_RESOLVED",
     targetType: "StaffCallRequest",
     targetId: call.id,

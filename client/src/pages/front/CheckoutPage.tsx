@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { api, ApiError } from "../../lib/api.js";
+import { api, ApiError, errorMessage } from "../../lib/api.js";
 import { useStaffMe } from "../../lib/useStaffMe.js";
 import { useStaffSocket } from "../../lib/useStaffSocket.js";
+import ConnectionBanner from "../../components/ConnectionBanner.js";
+import StepUpModal from "../../components/StepUpModal.js";
 import { formatWon } from "./format.js";
 import AmountPaymentPanel from "./AmountPaymentPanel.js";
 import DutchSplitPanel from "./DutchSplitPanel.js";
@@ -35,6 +37,8 @@ export default function CheckoutPage() {
   const [discountSubmitting, setDiscountSubmitting] = useState(false);
   const [voidTarget, setVoidTarget] = useState<PaymentRow | null>(null);
   const [voidSubmitting, setVoidSubmitting] = useState(false);
+  /** step-up이 필요해 보류된 취소 요청 — 재인증이 끝나면 같은 사유로 그대로 다시 보낸다. */
+  const [pendingVoid, setPendingVoid] = useState<{ paymentId: string; reason: string } | null>(null);
 
   const [closedOverlay, setClosedOverlay] = useState(false);
   const [pendingNotice, setPendingNotice] = useState(false);
@@ -51,7 +55,7 @@ export default function CheckoutPage() {
     setLoading(true);
     Promise.all([api.get("/api/staff/front/payment-methods").then((d) => setMethods(d.methods)), refresh()])
       .catch((err) => {
-        if (!cancelled) setLoadError(err instanceof ApiError ? err.message : "정산 정보를 불러오지 못했어요.");
+        if (!cancelled) setLoadError(errorMessage(err, "정산 정보를 불러오지 못했어요."));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -61,7 +65,7 @@ export default function CheckoutPage() {
     };
   }, [me, tableSessionId, refresh]);
 
-  useStaffSocket("front", (event) => {
+  useStaffSocket((event) => {
     if (event === "payment:recorded" || event === "order:created" || event === "order:status-changed") {
       refresh().catch(() => undefined);
     }
@@ -90,24 +94,37 @@ export default function CheckoutPage() {
       setDiscountOpen(false);
       handleSettlement(result.settlement);
     } catch (err) {
-      setActionError(err instanceof ApiError ? err.message : "할인 적용 중 오류가 발생했어요.");
+      setActionError(errorMessage(err, "할인 적용 중 오류가 발생했어요."));
     } finally {
       setDiscountSubmitting(false);
     }
   }
 
-  async function handleVoid(reason: string) {
-    if (!voidTarget) return;
+  /**
+   * 결제 취소/환불. 돈을 되돌리는 작업이므로 서버가 step-up 재인증을 요구한다(요구사항2.md §2.5.2).
+   * 403 STEP_UP_REQUIRED를 받으면 비밀번호 확인 창을 띄우고, 통과하면 같은 사유로 자동 재시도한다.
+   */
+  async function submitVoid(paymentId: string, reason: string) {
     setVoidSubmitting(true);
     try {
-      const result = await api.post(`/api/staff/front/payments/${voidTarget.id}/void`, { reason });
+      const result = await api.post(`/api/staff/front/payments/${paymentId}/void`, { reason });
       setVoidTarget(null);
+      setPendingVoid(null);
       handleSettlement(result.settlement);
     } catch (err) {
-      setActionError(err instanceof ApiError ? err.message : "결제 취소 중 오류가 발생했어요.");
+      if (err instanceof ApiError && err.code === "STEP_UP_REQUIRED") {
+        setPendingVoid({ paymentId, reason });
+        return;
+      }
+      setActionError(errorMessage(err, "결제 취소 중 오류가 발생했어요."));
     } finally {
       setVoidSubmitting(false);
     }
+  }
+
+  async function handleVoid(reason: string) {
+    if (!voidTarget) return;
+    await submitVoid(voidTarget.id, reason);
   }
 
   if (!me) return null;
@@ -136,6 +153,7 @@ export default function CheckoutPage() {
 
   return (
     <div className="page page--wide">
+      <ConnectionBanner />
       {closedOverlay && (
         <div className="checkout-closed-overlay">
           <div className="checkout-closed-card">
@@ -245,6 +263,22 @@ export default function CheckoutPage() {
           onConfirm={handleDiscount}
         />
       )}
+      {pendingVoid && me && (
+        <StepUpModal
+          purpose="결제 취소"
+          mfaEnabled={me.mfaEnabled}
+          onSuccess={() => {
+            const retry = pendingVoid;
+            setPendingVoid(null);
+            void submitVoid(retry.paymentId, retry.reason);
+          }}
+          onCancel={() => {
+            setPendingVoid(null);
+            setVoidTarget(null);
+          }}
+        />
+      )}
+
       {voidTarget && (
         <VoidReasonModal
           amountLabel={formatWon(voidTarget.amount)}

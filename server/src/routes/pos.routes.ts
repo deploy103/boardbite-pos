@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../prisma.js";
-import { requireRole } from "../middleware/requireRole.js";
+import { staffGate } from "../middleware/requireRole.js";
 import { recordAuditLog } from "../services/auditLog.js";
 import {
   acceptOrder,
@@ -15,7 +15,7 @@ import {
 } from "../services/order.js";
 
 export const posRouter = Router();
-posRouter.use(requireRole("POS"));
+posRouter.use(staffGate("POS"));
 
 posRouter.get("/menu-items", async (_req, res) => {
   const items = await prisma.menuItem.findMany({
@@ -50,7 +50,7 @@ posRouter.get("/history", async (req, res) => {
 function handleTransition(fn: (orderId: string, staffId: string, ...rest: string[]) => Promise<unknown>) {
   return async (req: import("express").Request, res: import("express").Response) => {
     try {
-      const order = await fn(req.params.id, req.session.staffUserId!, req.body?.reason);
+      const order = await fn(req.params.id, req.staff!.id, req.body?.reason);
       res.json({ order });
     } catch (err) {
       if (err instanceof OrderStateError) {
@@ -75,7 +75,7 @@ posRouter.post("/orders/:id/reject", async (req, res) => {
     return;
   }
   try {
-    const order = await rejectOrder(req.params.id, req.session.staffUserId!, parsed.data.reason);
+    const order = await rejectOrder(req.params.id, req.staff!.id, parsed.data.reason);
     res.json({ order });
   } catch (err) {
     if (err instanceof OrderStateError) {
@@ -93,7 +93,7 @@ posRouter.post("/orders/:id/cancel", async (req, res) => {
     return;
   }
   try {
-    const order = await cancelOrder(req.params.id, req.session.staffUserId!, parsed.data.reason);
+    const order = await cancelOrder(req.params.id, req.staff!.id, parsed.data.reason);
     res.json({ order });
   } catch (err) {
     if (err instanceof OrderStateError) {
@@ -125,7 +125,7 @@ posRouter.patch("/menu-items/:id/sold-out", async (req, res) => {
   if (parsed.data.isSoldOut !== item.isSoldOut) {
     await recordAuditLog({
       actorType: "STAFF",
-      actorId: req.session.staffUserId,
+      actorId: req.staff!.id,
       action: "MENU_SOLD_OUT",
       targetType: "MenuItem",
       targetId: item.id,

@@ -26,9 +26,18 @@ model StaffUser {
   lastLoginAt       DateTime?
   createdAt         DateTime  @default(now())
 
-  openedTableSessions TableSession[] @relation("OpenedBy")
+  // 권한/비밀번호/활성 상태가 바뀔 때마다 1씩 증가시킨다. 세션에 기록된 값과 다르면
+  // 그 세션은 즉시 무효(401)로 취급한다 — 요구사항2.md §2.3 stale session 무효화.
+  authVersion Int @default(1)
+
+  // ADMIN TOTP MFA — secret은 절대 평문으로 저장하지 않고 AES-256-GCM으로 봉인해 보관한다.
+  mfaEnabled         Boolean @default(false)
+  mfaSecretEncrypted String?
+
+  openedTableSessions TableSession[]      @relation("OpenedBy")
   payments            Payment[]
   loginAttempts       LoginAttempt[]
+  closingSettlements  ClosingSettlement[]
 }
 
 model StaffSession {
@@ -49,6 +58,7 @@ model LoginAttempt {
   createdAt   DateTime   @default(now())
 
   @@index([username, createdAt])
+  @@index([ip, createdAt])
 }
 
 model Table {
@@ -66,11 +76,17 @@ model Table {
 }
 
 model TableSession {
-  id          String   @id @default(cuid())
-  tableId     String
-  table       Table    @relation(fields: [tableId], references: [id])
-  token       String   @unique
-  status      String   @default("ACTIVE") // ACTIVE | PAID_PENDING_SERVICE | CLOSED | EXPIRED
+  id     String @id @default(cuid())
+  tableId String
+  table   Table  @relation(fields: [tableId], references: [id])
+  status  String @default("ACTIVE") // ACTIVE | PAID_PENDING_SERVICE | CLOSED | EXPIRED
+
+  // 이번 세션에서만 유효한 6자리 입장 코드. 원문은 저장하지 않고 서버 키 기반 HMAC만 보관한다.
+  // 물리 NFC/QR의 Table.publicSlug는 "어느 테이블인지"만 알려줄 뿐 접근 권한을 주지 않는다
+  // (요구사항2.md §2.2 — 과거에 저장해둔 /t/<slug> 링크로 미래 세션에 자동 입장 금지).
+  joinCodeHash     String?
+  joinCodeIssuedAt DateTime?
+
   guestCount  Int?
   note        String?
   openedById  String
@@ -79,12 +95,29 @@ model TableSession {
   closedAt    DateTime?
   closeReason String?
 
-  gameUsages   TableGameUsage[]
-  orders       Order[]
-  payments     Payment[]
-  callRequests StaffCallRequest[]
+  gameUsages     TableGameUsage[]
+  orders         Order[]
+  payments       Payment[]
+  callRequests   StaffCallRequest[]
+  deviceSessions CustomerDeviceSession[]
 
   @@index([tableId, status])
+}
+
+/// 손님 브라우저 1대 = 1행. join code 검증에 성공했을 때만 발급되며,
+/// 쿠키에는 32byte CSPRNG raw token을, DB에는 그 SHA-256 해시만 저장한다.
+model CustomerDeviceSession {
+  id             String       @id @default(cuid())
+  tableSessionId String
+  tableSession   TableSession @relation(fields: [tableSessionId], references: [id])
+  tokenHash      String       @unique
+  createdAt      DateTime     @default(now())
+  expiresAt      DateTime
+  lastSeenAt     DateTime?
+  revokedAt      DateTime?
+
+  @@index([tableSessionId])
+  @@index([expiresAt])
 }
 
 model GameTimePlan {
@@ -284,9 +317,35 @@ model AuditLog {
   metadata   String? // JSON string (민감정보 제외)
   prevHash   String
   hash       String
-  createdAt  DateTime @default(now())
+  // 1 = 레거시 SHA-256 체인, 2 = HMAC-SHA256(AUDIT_HMAC_KEY) 체인(요구사항2.md §5.2).
+  // 기존 v1 레코드는 그대로 검증 가능하게 두고, 신규 레코드만 v2로 기록한다.
+  hashVersion Int      @default(1)
+  createdAt   DateTime @default(now())
 
   @@index([action, createdAt])
+}
+
+/// 영업 마감 정산 스냅샷(요구사항2.md §9.1). 한 번 기록되면 수정하지 않는다 —
+/// 정정이 필요하면 새 마감 레코드를 추가하고 note로 사유를 남긴다.
+model ClosingSettlement {
+  id             String   @id @default(cuid())
+  openedAt       DateTime
+  closedAt       DateTime
+  expectedCash   Int
+  actualCash     Int
+  cashDifference Int
+  totalRevenue   Int
+  totalDiscount  Int
+  totalRefund    Int
+  totalVoid      Int
+  closedById     String
+  closedBy       StaffUser @relation(fields: [closedById], references: [id])
+  note           String?
+  /// 마감 시점의 상세 집계(결제수단별 매출, 미정산/강제종료 테이블 등) JSON 스냅샷.
+  snapshot       String
+  createdAt      DateTime  @default(now())
+
+  @@index([closedAt])
 }
 
 model StaffCallRequest {

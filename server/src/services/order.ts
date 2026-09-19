@@ -1,6 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "../prisma.js";
-import { recordAuditLog } from "./auditLog.js";
+import { recordAuditLogBestEffort } from "./auditLog.js";
 import { appEvents, RealtimeEvent } from "../realtime.js";
 import type { OrderStatus } from "../types/domain.js";
 import { maybeAutoSettleTableSession } from "./tableSession.js";
@@ -19,6 +19,68 @@ export interface CreateOrderInput {
 }
 
 export class OrderValidationError extends Error {}
+
+type MenuItemWithOptions = Prisma.MenuItemGetPayload<{ include: { optionGroups: { include: { choices: true } } } }>;
+type ChoiceWithGroup = Prisma.OptionChoiceGetPayload<{ include: { group: true } }>;
+
+export interface OrderItemOptionSnapshot {
+  optionChoiceId: string;
+  nameSnapshot: string;
+  extraPriceSnapshot: number;
+}
+
+/**
+ * 메뉴 옵션 규칙을 서버에서 전부 다시 검증한다(요구사항2.md §3.3).
+ * 클라이언트 UI를 우회해 API를 직접 호출해도 아래 규칙을 어긴 주문은 생성되지 않는다:
+ *
+ *  - 존재하지 않거나 비활성(isActive=false)인 choice 거부
+ *  - 다른 메뉴에 속한 choice 거부
+ *  - 같은 choice ID 중복 전송 거부
+ *  - required=true 그룹은 정확히 선택되어야 함
+ *  - multiSelect=false 그룹은 최대 1개
+ *
+ * 비활성 choice가 포함된 그룹이라도 required면 "선택 가능한 활성 choice"가 있어야 주문을 받는다.
+ */
+export function validateItemOptions(
+  menuItem: MenuItemWithOptions,
+  optionChoiceIds: string[],
+  optionChoiceMap: Map<string, ChoiceWithGroup>,
+): OrderItemOptionSnapshot[] {
+  if (new Set(optionChoiceIds).size !== optionChoiceIds.length) {
+    throw new OrderValidationError("같은 옵션을 중복해서 선택할 수 없습니다.");
+  }
+
+  const selectedByGroup = new Map<string, number>();
+  const options: OrderItemOptionSnapshot[] = [];
+
+  for (const choiceId of optionChoiceIds) {
+    const choice = optionChoiceMap.get(choiceId);
+    if (!choice || !choice.isActive || choice.group.menuItemId !== menuItem.id) {
+      throw new OrderValidationError("올바르지 않은 옵션이 포함되어 있습니다.");
+    }
+    selectedByGroup.set(choice.groupId, (selectedByGroup.get(choice.groupId) ?? 0) + 1);
+    options.push({
+      optionChoiceId: choice.id,
+      nameSnapshot: choice.name,
+      extraPriceSnapshot: choice.extraPrice,
+    });
+  }
+
+  for (const group of menuItem.optionGroups) {
+    const count = selectedByGroup.get(group.id) ?? 0;
+    if (!group.multiSelect && count > 1) {
+      throw new OrderValidationError(`'${group.name}' 옵션은 하나만 선택할 수 있습니다.`);
+    }
+    if (group.required && count === 0) {
+      const hasSelectableChoice = group.choices.some((choice) => choice.isActive);
+      if (hasSelectableChoice) {
+        throw new OrderValidationError(`'${group.name}' 옵션을 선택해 주세요.`);
+      }
+    }
+  }
+
+  return options;
+}
 
 /**
  * 주문 생성. 가격/옵션/품절 여부는 전부 서버가 DB에서 다시 계산하며,
@@ -64,17 +126,7 @@ export async function createOrder(input: CreateOrderInput) {
       throw new OrderValidationError("수량이 올바르지 않습니다.");
     }
 
-    const options = item.optionChoiceIds.map((choiceId) => {
-      const choice = optionChoiceMap.get(choiceId);
-      if (!choice || !choice.isActive || choice.group.menuItemId !== menuItem.id) {
-        throw new OrderValidationError("올바르지 않은 옵션이 포함되어 있습니다.");
-      }
-      return {
-        optionChoiceId: choice.id,
-        nameSnapshot: choice.name,
-        extraPriceSnapshot: choice.extraPrice,
-      };
-    });
+    const options = validateItemOptions(menuItem, item.optionChoiceIds, optionChoiceMap);
 
     return {
       menuItemId: menuItem.id,
@@ -107,7 +159,7 @@ export async function createOrder(input: CreateOrderInput) {
       return created;
     });
 
-    await recordAuditLog({
+    await recordAuditLogBestEffort({
       actorType: "SYSTEM",
       action: "ORDER_CREATED",
       targetType: "Order",
@@ -153,31 +205,37 @@ const ORDER_WITH_TABLE_INCLUDE = {
   tableSession: { include: { table: true } },
 } as const;
 
-async function requireOrder(orderId: string) {
-  const order = await prisma.order.findUnique({ where: { id: orderId }, include: ORDER_INCLUDE });
-  if (!order) throw new OrderStateError("존재하지 않는 주문입니다.", 404);
-  return order;
-}
-
+/**
+ * 주문 상태 전이를 단 한 번의 조건부 UPDATE로 수행한다(요구사항2.md §3.6).
+ *
+ *   UPDATE "Order" SET status=? WHERE id=? AND status IN (허용된 이전 상태)
+ *
+ * 변경된 행이 정확히 1건일 때만 성공으로 본다. "SELECT → 확인 → UPDATE" 방식과 달리
+ * 두 직원이 동시에 같은 버튼을 눌러도 한쪽만 성공하고 다른 쪽은 409를 받는다.
+ */
 async function applyTransition(
   orderId: string,
   fromStatuses: OrderStatus[],
   toStatus: OrderStatus,
-  extraData: Prisma.OrderUpdateInput,
+  extraData: Prisma.OrderUncheckedUpdateManyInput,
   staffId: string,
   action: string,
   metadata?: Record<string, unknown>,
 ) {
-  const order = await requireOrder(orderId);
-  if (!fromStatuses.includes(order.status as OrderStatus)) {
-    throw new OrderStateError(`현재 상태(${order.status})에서는 이 작업을 할 수 없어요.`);
-  }
-  const updated = await prisma.order.update({
-    where: { id: orderId },
+  const result = await prisma.order.updateMany({
+    where: { id: orderId, status: { in: fromStatuses } },
     data: { status: toStatus, ...extraData },
-    include: ORDER_INCLUDE,
   });
-  await recordAuditLog({
+
+  if (result.count !== 1) {
+    // 실패 원인을 구분해 운영자가 바로 이해할 수 있는 메시지를 준다.
+    const current = await prisma.order.findUnique({ where: { id: orderId }, select: { status: true } });
+    if (!current) throw new OrderStateError("존재하지 않는 주문입니다.", 404);
+    throw new OrderStateError(`현재 상태(${current.status})에서는 이 작업을 할 수 없어요.`);
+  }
+
+  const updated = await prisma.order.findUniqueOrThrow({ where: { id: orderId }, include: ORDER_INCLUDE });
+  await recordAuditLogBestEffort({
     actorType: "STAFF",
     actorId: staffId,
     action,

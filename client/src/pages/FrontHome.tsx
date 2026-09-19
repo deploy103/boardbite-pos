@@ -1,14 +1,15 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { api, ApiError } from "../lib/api.js";
+import { api, errorMessage, ApiError } from "../lib/api.js";
 import { useStaffMe } from "../lib/useStaffMe.js";
+import ConnectionBanner from "../components/ConnectionBanner.js";
 
 interface TableRow {
   id: string;
   number: number;
   name: string | null;
   status: "DISABLED" | "AVAILABLE" | "OPEN" | "SETTLING";
-  session?: { id: string; guestCount: number | null; gameEndsAt: string | null };
+  session?: { id: string; guestCount: number | null; openedAt: string; gameEndsAt: string | null };
   bill?: { totalAmount: number; paidAmount: number; remainingAmount: number };
 }
 
@@ -19,6 +20,26 @@ interface GamePlan {
   price: number;
 }
 
+interface CloseBlocker {
+  code: string;
+  message: string;
+  value: number;
+}
+
+/** 테이블 OPEN 직후 손님에게 읽어줄 정보 — 평문 join code는 이 순간에만 존재한다. */
+interface IssuedCode {
+  tableNumber: number;
+  tableSessionId: string;
+  joinCode: string;
+  openedAt: string;
+  gameEndsAt: string | null;
+}
+
+function formatTime(iso: string | null): string {
+  if (!iso) return "-";
+  return new Date(iso).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" });
+}
+
 export default function FrontHome() {
   const { me } = useStaffMe("FRONT");
   const [tables, setTables] = useState<TableRow[]>([]);
@@ -27,6 +48,8 @@ export default function FrontHome() {
   const [guestCount, setGuestCount] = useState(1);
   const [planId, setPlanId] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
+  const [issuedCode, setIssuedCode] = useState<IssuedCode | null>(null);
+  const [blockedClose, setBlockedClose] = useState<{ table: TableRow; blockers: CloseBlocker[] } | null>(null);
 
   async function refresh() {
     const data = await api.get("/api/staff/front/tables");
@@ -44,26 +67,60 @@ export default function FrontHome() {
     return () => clearInterval(interval);
   }, [me]);
 
-  async function handleOpen(tableId: string) {
+  async function handleOpen(table: TableRow) {
     try {
-      await api.post(`/api/staff/front/tables/${tableId}/open`, {
+      setError(null);
+      const result = await api.post(`/api/staff/front/tables/${table.id}/open`, {
         guestCount,
         gameTimePlanId: planId || undefined,
       });
       setOpeningId(null);
+      // 서버는 평문 코드를 저장하지 않는다. 이 응답을 놓치면 재발급밖에 방법이 없다.
+      setIssuedCode({
+        tableNumber: table.number,
+        tableSessionId: result.session.id,
+        joinCode: result.joinCode,
+        openedAt: result.session.openedAt,
+        gameEndsAt: result.gameEndsAt,
+      });
       await refresh();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "테이블을 여는 중 오류가 발생했어요.");
+      setError(errorMessage(err, "테이블을 여는 중 오류가 발생했어요."));
     }
   }
 
-  async function handleClose(tableId: string) {
-    if (!confirm("이 테이블을 종료할까요? (정산이 끝나지 않았다면 먼저 확인해 주세요)")) return;
+  async function handleRotateCode(tableSessionId: string, tableNumber: number) {
     try {
-      await api.post(`/api/staff/front/tables/${tableId}/close`, {});
+      setError(null);
+      const result = await api.post(`/api/staff/front/table-sessions/${tableSessionId}/rotate-join-code`, {});
+      setIssuedCode({
+        tableNumber,
+        tableSessionId,
+        joinCode: result.joinCode,
+        openedAt: new Date().toISOString(),
+        gameEndsAt: null,
+      });
+    } catch (err) {
+      setError(errorMessage(err, "입장 코드를 다시 발급하지 못했어요."));
+    }
+  }
+
+  /**
+   * 일반 종료. 더 이상 무조건 강제 종료되지 않으므로(요구사항2.md §3.1) 서버가 409로 막으면
+   * 무엇이 남았는지 그대로 보여준다. 강제 종료가 필요하면 관리자 화면에서만 가능하다.
+   */
+  async function handleClose(table: TableRow) {
+    try {
+      setError(null);
+      setBlockedClose(null);
+      await api.post(`/api/staff/front/tables/${table.id}/close`, {});
       await refresh();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "테이블을 닫는 중 오류가 발생했어요.");
+      if (err instanceof ApiError && err.code === "CLOSE_BLOCKED") {
+        setBlockedClose({ table, blockers: (err.body?.blockers as CloseBlocker[]) ?? [] });
+        return;
+      }
+      setError(errorMessage(err, "테이블을 닫는 중 오류가 발생했어요."));
     }
   }
 
@@ -71,8 +128,50 @@ export default function FrontHome() {
 
   return (
     <div className="page page--wide">
+      <ConnectionBanner />
       <h1>FRONT · 테이블 현황</h1>
       {error && <p className="error-text">{error}</p>}
+
+      {issuedCode && (
+        <div className="join-code-card">
+          <div className="table-hero__number">{issuedCode.tableNumber}번 테이블 입장 코드</div>
+          <div className="join-code-value">{issuedCode.joinCode}</div>
+          <div className="text-muted">손님에게 이 숫자를 안내해 주세요. 자리를 정리하면 바로 만료됩니다.</div>
+          <ul className="danger-details" style={{ marginTop: 16 }}>
+            <li>
+              <span className="text-muted">이용 시작</span>
+              <strong>{formatTime(issuedCode.openedAt)}</strong>
+            </li>
+            <li>
+              <span className="text-muted">이용 종료 예정</span>
+              <strong>{issuedCode.gameEndsAt ? formatTime(issuedCode.gameEndsAt) : "이용권 없음"}</strong>
+            </li>
+          </ul>
+          <button className="btn-primary" onClick={() => setIssuedCode(null)}>
+            확인했어요
+          </button>
+        </div>
+      )}
+
+      {blockedClose && (
+        <div className="join-code-card" style={{ borderColor: "var(--color-danger)" }}>
+          <div className="table-hero__number">{blockedClose.table.number}번 테이블을 종료할 수 없어요</div>
+          <ul className="danger-details" style={{ marginTop: 16 }}>
+            {blockedClose.blockers.map((b) => (
+              <li key={b.code}>
+                <span>{b.message}</span>
+              </li>
+            ))}
+          </ul>
+          <p className="text-muted" style={{ fontSize: "0.85rem" }}>
+            정산과 서빙을 마친 뒤 다시 시도해 주세요. 부득이하게 그대로 닫아야 한다면 관리자에게 요청하세요.
+          </p>
+          <button className="btn-secondary" onClick={() => setBlockedClose(null)}>
+            닫기
+          </button>
+        </div>
+      )}
+
       <div className="grid-tables" style={{ marginTop: 16 }}>
         {tables.map((t) => (
           <div key={t.id} className="table-card">
@@ -103,7 +202,7 @@ export default function FrontHome() {
                         </option>
                       ))}
                     </select>
-                    <button className="btn-primary" onClick={() => handleOpen(t.id)}>
+                    <button className="btn-primary" onClick={() => handleOpen(t)}>
                       테이블 열기
                     </button>
                   </div>
@@ -115,16 +214,25 @@ export default function FrontHome() {
               </>
             )}
             {(t.status === "OPEN" || t.status === "SETTLING") && t.session && (
-              <Link
-                to={`/front/checkout/${t.session.id}`}
-                className="btn-primary"
-                style={{ marginTop: 8, display: "block", textAlign: "center", textDecoration: "none" }}
-              >
-                정산
-              </Link>
+              <>
+                <Link
+                  to={`/front/checkout/${t.session.id}`}
+                  className="btn-primary"
+                  style={{ marginTop: 8, display: "block", textAlign: "center", textDecoration: "none" }}
+                >
+                  정산
+                </Link>
+                <button
+                  className="btn-secondary"
+                  style={{ marginTop: 8 }}
+                  onClick={() => handleRotateCode(t.session!.id, t.number)}
+                >
+                  입장 코드 재발급
+                </button>
+              </>
             )}
             {t.status === "OPEN" && (
-              <button className="btn-secondary" style={{ marginTop: 8 }} onClick={() => handleClose(t.id)}>
+              <button className="btn-secondary" style={{ marginTop: 8 }} onClick={() => handleClose(t)}>
                 테이블 종료
               </button>
             )}

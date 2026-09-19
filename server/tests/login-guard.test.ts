@@ -2,90 +2,109 @@ import { describe, it, expect } from "vitest";
 import request from "supertest";
 import { app, createStaff } from "./helpers.js";
 import { prisma } from "../src/prisma.js";
+import { backoffDelayMs, LOGIN_GUARD_THRESHOLDS } from "../src/auth/loginGuard.js";
 
-const IP_FAIL_THRESHOLD = 15; // server/src/auth/loginGuard.ts와 동일한 값
+/**
+ * 요구사항2.md §4.1 — 계정 잠금 DoS 완화.
+ *
+ * app.set("trust proxy", 1)이므로 X-Forwarded-For로 서로 다른 출처 IP를 흉내 낼 수 있다.
+ * 이 테스트의 핵심 주장은 "공격자 IP는 막히지만 같은 계정의 정상 로그인은 계속 된다"이다.
+ */
+function loginFrom(ip: string, username: string, password: string) {
+  return request(app)
+    .post("/api/staff/login")
+    .set("X-BoardBite-Client", "1")
+    .set("X-Forwarded-For", ip)
+    .send({ username, password });
+}
+
+let ipCounter = 0;
+/** 테스트끼리 IP 카운터가 섞이지 않도록 매번 새로운 대역을 쓴다. */
+function freshIp() {
+  ipCounter += 1;
+  return `203.0.113.${ipCounter % 250}`;
+}
 
 describe("로그인 brute force 방어", () => {
-  it("같은 계정으로 5회 연속 비밀번호 오류 시, 6번째 시도(비밀번호가 맞아도) 429로 차단된다", async () => {
+  it("공격자 IP는 (계정+IP) 임계값에서 차단되지만, 같은 계정은 다른 IP에서 정상 로그인된다", async () => {
     const { username, password } = await createStaff("FRONT");
+    const attackerIp = freshIp();
+    const staffIp = freshIp();
 
-    for (let i = 0; i < 5; i += 1) {
-      const res = await request(app)
-        .post("/api/staff/login")
-        .set("X-BoardBite-Client", "1")
-        .send({ username, password: "wrong-password" });
-      expect(res.status).toBe(401);
+    for (let i = 0; i < LOGIN_GUARD_THRESHOLDS.PAIR_FAIL_THRESHOLD; i += 1) {
+      const res = await loginFrom(attackerIp, username, "wrong-password");
+      expect([401, 429]).toContain(res.status);
     }
 
-    // 6번째: 이번엔 올바른 비밀번호를 보내도 계정 잠금 때문에 429여야 한다.
-    const blockedRes = await request(app)
-      .post("/api/staff/login")
-      .set("X-BoardBite-Client", "1")
-      .send({ username, password });
-    expect(blockedRes.status).toBe(429);
+    // 공격자 IP는 올바른 비밀번호를 보내도 막힌다.
+    const blocked = await loginFrom(attackerIp, username, password);
+    expect(blocked.status).toBe(429);
+
+    // 하지만 운영진이 쓰는 다른 단말/IP에서는 같은 계정으로 계속 로그인할 수 있어야 한다.
+    // (이전 정책의 "username 5회 실패 → 전면 하드 락" DoS가 제거되었다는 뜻이다.)
+    const allowed = await loginFrom(staffIp, username, password);
+    expect(allowed.status).toBe(200);
   });
 
-  it("로그인 실패 응답에는 비밀번호나 해시가 노출되지 않는다", async () => {
-    const { username } = await createStaff("FRONT");
-    const res = await request(app)
-      .post("/api/staff/login")
-      .set("X-BoardBite-Client", "1")
-      .send({ username, password: "totally-wrong" });
+  it("한 IP가 여러 계정을 훑으면 IP 단위 임계값에서 차단된다", async () => {
+    const scannerIp = freshIp();
 
-    expect(res.status).toBe(401);
-    const raw = JSON.stringify(res.body);
+    for (let i = 0; i < LOGIN_GUARD_THRESHOLDS.IP_FAIL_THRESHOLD; i += 1) {
+      const victim = await createStaff("FRONT");
+      const res = await loginFrom(scannerIp, victim.username, "wrong-password");
+      expect([401, 429]).toContain(res.status);
+    }
+
+    // 이 IP에서는 한 번도 시도하지 않은 새 계정의 올바른 비밀번호조차 통과하지 못한다.
+    const fresh = await createStaff("FRONT");
+    const blocked = await loginFrom(scannerIp, fresh.username, fresh.password);
+    expect(blocked.status).toBe(429);
+
+    // 같은 계정을 다른 IP에서 쓰는 것은 여전히 가능하다.
+    const allowed = await loginFrom(freshIp(), fresh.username, fresh.password);
+    expect(allowed.status).toBe(200);
+
+    await prisma.loginAttempt.deleteMany({ where: { ip: scannerIp } });
+  });
+
+  it("로그인 성공 시 그 (계정, IP)의 실패 기록이 초기화되어 backoff가 풀린다", async () => {
+    const { username, password } = await createStaff("FRONT");
+    const ip = freshIp();
+
+    await loginFrom(ip, username, "wrong-password");
+    await loginFrom(ip, username, "wrong-password");
+    expect(await prisma.loginAttempt.count({ where: { username, ip, succeeded: false } })).toBe(2);
+
+    const ok = await loginFrom(ip, username, password);
+    expect(ok.status).toBe(200);
+    expect(await prisma.loginAttempt.count({ where: { username, ip, succeeded: false } })).toBe(0);
+  });
+
+  it("실패가 쌓이면 지수 backoff가 적용되지만 상한이 있다", () => {
+    expect(backoffDelayMs(1)).toBe(0);
+    expect(backoffDelayMs(2)).toBe(0);
+    expect(backoffDelayMs(3)).toBeGreaterThan(0);
+    expect(backoffDelayMs(4)).toBeGreaterThan(backoffDelayMs(3));
+    expect(backoffDelayMs(50)).toBeLessThanOrEqual(4000);
+  });
+
+  it("로그인 실패 응답에는 비밀번호나 해시가 노출되지 않고 계정 존재 여부도 드러나지 않는다", async () => {
+    const { username } = await createStaff("FRONT");
+    const ip = freshIp();
+
+    const wrongPassword = await loginFrom(ip, username, "totally-wrong");
+    const unknownUser = await loginFrom(ip, "no-such-user-at-all", "totally-wrong");
+
+    expect(wrongPassword.status).toBe(401);
+    expect(unknownUser.status).toBe(401);
+    // 존재하는 계정과 존재하지 않는 계정의 응답이 완전히 동일해야 한다.
+    expect(wrongPassword.body).toEqual(unknownUser.body);
+
+    const raw = JSON.stringify(wrongPassword.body);
     expect(raw).not.toContain("totally-wrong");
     expect(raw.toLowerCase()).not.toContain("passwordhash");
     expect(raw.toLowerCase()).not.toContain("$2a$");
-    expect(raw.toLowerCase()).not.toContain("$2b$"); // bcrypt 해시 접두사
-    expect(Object.keys(res.body)).toEqual(["error"]);
-  });
-
-  it("계정 잠금과 별개로 IP 단위 반복 실패 제한이 존재하며, 다른 계정에 대한 반복 실패로도 차단된다", async () => {
-    // 이 IP(127.0.0.1, supertest 기본값)의 현재 누적 실패 횟수를 확인하고,
-    // 임계값(IP_FAIL_THRESHOLD)에 도달할 때까지 서로 다른 계정으로 실패 로그인을 반복한다.
-    // 계정 단위 잠금(5회)에 걸리지 않도록 매번 새 계정을 사용한다.
-    const probe = await createStaff("FRONT");
-    const probeRes = await request(app)
-      .post("/api/staff/login")
-      .set("X-BoardBite-Client", "1")
-      .send({ username: probe.username, password: "wrong-password" });
-    expect(probeRes.status).toBe(401);
-
-    const sample = await prisma.loginAttempt.findFirst({
-      where: { username: probe.username, succeeded: false },
-      orderBy: { createdAt: "desc" },
-    });
-    expect(sample).not.toBeNull();
-    const ip = sample!.ip;
-
-    let currentFailures = await prisma.loginAttempt.count({ where: { ip, succeeded: false } });
-    let guard = 0;
-    while (currentFailures < IP_FAIL_THRESHOLD && guard < IP_FAIL_THRESHOLD + 5) {
-      const { username } = await createStaff("FRONT");
-      const res = await request(app)
-        .post("/api/staff/login")
-        .set("X-BoardBite-Client", "1")
-        .send({ username, password: "wrong-password" });
-      // 아직 IP 임계값에 도달하기 전이라면 일반적인 401, 도달한 이후라면 429일 수 있다.
-      expect([401, 429]).toContain(res.status);
-      currentFailures = await prisma.loginAttempt.count({ where: { ip, succeeded: false } });
-      guard += 1;
-    }
-
-    expect(currentFailures).toBeGreaterThanOrEqual(IP_FAIL_THRESHOLD);
-
-    // 완전히 새로운(잠기지 않은) 계정으로 올바른 비밀번호를 보내도 IP 제한으로 차단되어야 한다.
-    const fresh = await createStaff("FRONT");
-    const blockedRes = await request(app)
-      .post("/api/staff/login")
-      .set("X-BoardBite-Client", "1")
-      .send({ username: fresh.username, password: fresh.password });
-    expect(blockedRes.status).toBe(429);
-
-    // 이 테스트 파일은 의도적으로 실제 IP 잠금 임계값을 넘겨야 하므로, 검증이 끝나면
-    // 이 IP(127.0.0.1, supertest 공용 IP)에 대해 우리가 만든 실패 기록을 정리해서
-    // 같은 프로세스/DB를 공유하는 다른 테스트 파일의 로그인이 막히지 않도록 한다.
-    await prisma.loginAttempt.deleteMany({ where: { ip } });
+    expect(raw.toLowerCase()).not.toContain("$2b$");
+    expect(Object.keys(wrongPassword.body)).toEqual(["error"]);
   });
 });

@@ -80,6 +80,17 @@ export function lineUnitPrice(line: CartLine): number {
   return line.menuItem.price + optionsSum;
 }
 
+/**
+ * 주문 내역 한 줄의 실제 청구 금액(요구사항2.md §10.1).
+ *
+ * 서버는 (단가 + 옵션 추가금) × 수량으로 청구하는데 화면이 unitPrice만 곱하면
+ * 옵션 금액이 통째로 빠져 보인다 — 손님이 보는 금액과 실제 결제 금액이 달라지는 버그였다.
+ */
+export function orderItemLineTotal(item: OrderItem): number {
+  const optionsSum = item.options.reduce((sum, option) => sum + option.extraPriceSnapshot, 0);
+  return (item.unitPrice + optionsSum) * item.quantity;
+}
+
 export function lineOptionNames(line: CartLine): string[] {
   const choices = allChoicesOf(line.menuItem);
   return line.optionChoiceIds

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { prisma } from "../src/prisma.js";
 import { recordAuditLog, verifyAuditLogChain, purgeAuditLogs } from "../src/services/auditLog.js";
-import { createStaff, loginAgent } from "./helpers.js";
+import { createStaff, loginAgent, elevate } from "./helpers.js";
 
 describe("감사 로그 정리(purge)", () => {
   it("기준 날짜 이전 로그를 삭제하고, 삭제 자체가 새 감사 로그로 남는다", async () => {
@@ -55,9 +55,19 @@ describe("감사 로그 정리(purge)", () => {
     expect(brokenAt).toBeNull();
   });
 
-  it("ADMIN API로 정리하면 confirm이 없으면 거부되고, 있으면 성공한다", async () => {
+  it("ADMIN API로 정리하면 step-up과 confirm이 모두 있어야 성공한다", async () => {
     const { username, password } = await createStaff("ADMIN");
     const admin = await loginAgent(username, password);
+
+    // 감사 로그 삭제는 고위험 작업이므로 재인증 없이는 confirm이 있어도 막힌다(요구사항2.md §2.5.2).
+    const withoutStepUp = await admin
+      .post("/api/staff/admin/audit-logs/purge")
+      .set("X-BoardBite-Client", "1")
+      .send({ beforeDate: new Date().toISOString(), confirm: true });
+    expect(withoutStepUp.status).toBe(403);
+    expect(withoutStepUp.body.code).toBe("STEP_UP_REQUIRED");
+
+    await elevate(admin, password);
 
     const withoutConfirm = await admin
       .post("/api/staff/admin/audit-logs/purge")

@@ -1,11 +1,18 @@
 import { describe, it, expect } from "vitest";
 import request from "supertest";
-import { app, createStaff, loginAgent, createTableWithMenu, openTableSessionDirect } from "./helpers.js";
+import { createStaff, loginAgent, createTableWithMenu, openTableSessionDirect, joinCustomer, elevate } from "./helpers.js";
 import { prisma } from "../src/prisma.js";
 
 async function adminAgent() {
   const { username, password } = await createStaff("ADMIN");
   return loginAgent(username, password);
+}
+
+/** 고위험 작업(백업/강제종료/권한변경 등)용 — 로그인 후 step-up 재인증까지 마친 ADMIN. */
+async function elevatedAdminAgent() {
+  const { username, password } = await createStaff("ADMIN");
+  const agent = await loginAgent(username, password);
+  return elevate(agent, password);
 }
 
 describe("운영 설정 (ADMIN)", () => {
@@ -42,10 +49,8 @@ describe("운영 설정 (ADMIN)", () => {
     const admin = await adminAgent();
     const { table, menuItem } = await createTableWithMenu();
     const front = await createStaff("FRONT");
-    await openTableSessionDirect(table.id, front.username);
-
-    const customer = request.agent(app);
-    await customer.get(`/api/customer/entry/${table.publicSlug}`);
+    const session = await openTableSessionDirect(table.id, front.username);
+    const customer = await joinCustomer(table.publicSlug, session.joinCode);
 
     await admin.patch("/api/staff/admin/settings").set("X-BoardBite-Client", "1").send({ orderingEnabled: false });
     try {
@@ -65,10 +70,8 @@ describe("테이블 잠금 (ADMIN)", () => {
     const admin = await adminAgent();
     const { table, menuItem } = await createTableWithMenu();
     const front = await createStaff("FRONT");
-    await openTableSessionDirect(table.id, front.username);
-
-    const customer = request.agent(app);
-    await customer.get(`/api/customer/entry/${table.publicSlug}`);
+    const session = await openTableSessionDirect(table.id, front.username);
+    const customer = await joinCustomer(table.publicSlug, session.joinCode);
 
     const lockRes = await admin.patch(`/api/staff/admin/tables/${table.id}`).set("X-BoardBite-Client", "1").send({ ordersLocked: true });
     expect(lockRes.status).toBe(200);
@@ -161,8 +164,15 @@ describe("매출 현황 및 결제 내역 조회 (ADMIN)", () => {
 });
 
 describe("DB 백업 (ADMIN)", () => {
-  it("백업을 생성하고 목록에서 확인한 뒤 다운로드할 수 있다", async () => {
+  it("step-up 재인증 없이는 백업을 생성하거나 내려받을 수 없다", async () => {
     const admin = await adminAgent();
+    const create = await admin.post("/api/staff/admin/backups").set("X-BoardBite-Client", "1").send();
+    expect(create.status).toBe(403);
+    expect(create.body.code).toBe("STEP_UP_REQUIRED");
+  });
+
+  it("백업을 생성하고 목록에서 확인한 뒤 다운로드할 수 있다", async () => {
+    const admin = await elevatedAdminAgent();
     const create = await admin.post("/api/staff/admin/backups").set("X-BoardBite-Client", "1").send();
     expect(create.status).toBe(201);
     expect(create.body.backup.filename).toMatch(/\.db$/);
@@ -180,7 +190,7 @@ describe("DB 백업 (ADMIN)", () => {
   });
 
   it("경로 조작이 포함된 파일명은 거부된다", async () => {
-    const admin = await adminAgent();
+    const admin = await elevatedAdminAgent();
     const res = await admin.get("/api/staff/admin/backups/..%2F..%2Fpackage.json");
     expect(res.status).toBe(404);
   });

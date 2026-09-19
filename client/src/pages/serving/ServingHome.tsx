@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api, ApiError } from "../../lib/api.js";
 import { useStaffMe } from "../../lib/useStaffMe.js";
 import { useStaffSocket } from "../../lib/useStaffSocket.js";
+import ConnectionBanner from "../../components/ConnectionBanner.js";
 import { useOperationSettings } from "../../lib/useOperationSettings.js";
 import ReadyOrderCard from "./ReadyOrderCard.js";
 import RecentlyServedCard from "./RecentlyServedCard.js";
@@ -63,7 +64,7 @@ export default function ServingHome() {
     return () => clearInterval(interval);
   }, [me, loadReady, loadRecentlyServed, loadStaffCalls]);
 
-  useStaffSocket("serving", (event) => {
+  useStaffSocket((event) => {
     if (event === "order:status-changed") {
       loadReady();
       loadRecentlyServed();
@@ -138,6 +139,7 @@ export default function ServingHome() {
 
   return (
     <div className="page page--wide">
+      <ConnectionBanner />
       <h1>SERVING · 서빙</h1>
 
       {error && <p className="error-text">{error}</p>}

@@ -1,0 +1,30 @@
+# 요구사항2.md §8 — CodeQL 정적 분석(TypeScript/JavaScript).
+# PR마다 돌리면 느려지므로 main 푸시와 주 1회 스케줄로 제한한다.
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    # 매주 월요일 새벽(UTC) — 정각을 피해 분산시킨다.
+    - cron: "37 4 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (javascript-typescript)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+          queries: security-and-quality
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:javascript-typescript"

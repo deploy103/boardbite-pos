@@ -20,7 +20,8 @@
     "test:e2e": "npm run test --workspace e2e",
     "e2e:server": "node e2e/scripts/prepare-and-start.mjs",
     "prisma:migrate": "npm run prisma:migrate --workspace server",
-    "prisma:seed": "npm run prisma:seed --workspace server"
+    "prisma:seed": "npm run prisma:seed --workspace server",
+    "e2e:server:secure": "node e2e/scripts/prepare-and-start-secure.mjs"
   },
   "license": "MIT"
 }

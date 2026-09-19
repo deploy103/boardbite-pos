@@ -5,10 +5,16 @@ on:
     branches: [main]
   pull_request:
 
+# 요구사항2.md §8 — 기본은 최소 권한. 더 필요한 job에서만 개별적으로 올린다.
+permissions:
+  contents: read
+
 jobs:
   secret-scan:
     name: Secret scan (Gitleaks)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -31,6 +37,10 @@ jobs:
       SERVING_ID: serving
       SERVING_PW: ci-test-serving-pw-12345678
       DATABASE_URL: "file:./dev.db"
+      # NODE_ENV=test에서는 이 값들이 SESSION_SECRET에서 파생되지만,
+      # 실제 운영과 동일한 코드 경로를 타도록 CI에서도 명시적으로 넣어준다.
+      AUDIT_HMAC_KEY: ci-test-audit-hmac-key-not-for-prod-0123456789
+      MFA_ENCRYPTION_KEY: ci-test-mfa-encryption-key-not-for-prod-0123456789
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -45,6 +55,9 @@ jobs:
         working-directory: server
         run: npx vitest run
       - run: npm run build:client
+      # 공급망 점검: high 이상만 CI를 깨뜨린다(low/moderate는 Dependabot PR로 처리).
+      - name: npm audit (high 이상)
+        run: npm audit --audit-level=high
 
   e2e:
     name: End-to-end (Playwright)
@@ -69,3 +82,18 @@ jobs:
           path: e2e/playwright-report/
           retention-days: 7
           if-no-files-found: ignore
+
+  dependency-review:
+    name: Dependency review
+    runs-on: ubuntu-latest
+    # PR에서 새로 들어오는 의존성만 검사하므로 push에서는 돌리지 않는다.
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: always

@@ -1,7 +1,11 @@
 import { useEffect, useState } from "react";
 import { api } from "../lib/api.js";
 import { useStaffMe } from "../lib/useStaffMe.js";
-import { useErrorBanner } from "./admin/shared.js";
+import ConnectionBanner from "../components/ConnectionBanner.js";
+import StepUpModal from "../components/StepUpModal.js";
+import DangerConfirmModal from "../components/DangerConfirmModal.js";
+import { useErrorBanner, useStepUpGuard } from "./admin/shared.js";
+import ClosingPanel from "./admin/ClosingPanel.js";
 import PaymentMethodsPanel from "./admin/PaymentMethodsPanel.js";
 import PaymentsPanel from "./admin/PaymentsPanel.js";
 import RevenuePanel from "./admin/RevenuePanel.js";
@@ -18,7 +22,8 @@ type Tab =
   | "payments"
   | "revenue"
   | "settings"
-  | "backups";
+  | "backups"
+  | "closing";
 
 export default function AdminHome() {
   const { me } = useStaffMe("ADMIN");
@@ -28,6 +33,7 @@ export default function AdminHome() {
 
   return (
     <div className="page page--wide">
+      <ConnectionBanner />
       <h1>ADMIN</h1>
       <nav style={{ display: "flex", gap: 8, margin: "16px 0", flexWrap: "wrap" }}>
         {(
@@ -42,6 +48,7 @@ export default function AdminHome() {
             "revenue",
             "settings",
             "backups",
+            "closing",
           ] as Tab[]
         ).map((t) => (
           <button key={t} className="btn-secondary" onClick={() => setTab(t)} disabled={tab === t}>
@@ -55,31 +62,51 @@ export default function AdminHome() {
             {t === "revenue" && "매출현황"}
             {t === "settings" && "운영설정"}
             {t === "backups" && "백업"}
+            {t === "closing" && "영업 마감"}
           </button>
         ))}
       </nav>
-      {tab === "tables" && <TablesPanel />}
+      {tab === "tables" && <TablesPanel mfaEnabled={me.mfaEnabled} />}
       {tab === "menu" && <MenuPanel />}
-      {tab === "users" && <UsersPanel />}
+      {tab === "users" && <UsersPanel mfaEnabled={me.mfaEnabled} />}
       {tab === "game-plans" && <GamePlansPanel />}
       {tab === "logs" && <LogsPanel />}
       {tab === "payment-methods" && <PaymentMethodsPanel />}
       {tab === "payments" && <PaymentsPanel />}
       {tab === "revenue" && <RevenuePanel />}
       {tab === "settings" && <SettingsPanel />}
-      {tab === "backups" && <BackupsPanel />}
+      {tab === "backups" && <BackupsPanel mfaEnabled={me.mfaEnabled} />}
+      {tab === "closing" && <ClosingPanel mfaEnabled={me.mfaEnabled} />}
     </div>
   );
 }
 
-function TablesPanel() {
-  const [tables, setTables] = useState<any[]>([]);
+interface AdminTable {
+  id: string;
+  number: number;
+  status: "DISABLED" | "AVAILABLE" | "OPEN" | "SETTLING";
+  publicSlug: string;
+  ordersLocked: boolean;
+  paymentsLocked: boolean;
+}
+
+interface CloseBlocker {
+  code: string;
+  message: string;
+  value: number;
+}
+
+function TablesPanel({ mfaEnabled }: { mfaEnabled: boolean }) {
+  const [tables, setTables] = useState<AdminTable[]>([]);
   const [number, setNumber] = useState("");
+  const [forceTarget, setForceTarget] = useState<{ table: AdminTable; blockers: CloseBlocker[] } | null>(null);
   const { error, setError, wrap } = useErrorBanner();
+  const { pending, setPending, guard } = useStepUpGuard();
 
   const refresh = () => api.get("/api/staff/admin/tables").then((d) => setTables(d.tables));
   useEffect(() => {
     refresh().catch(() => setError("테이블 목록을 불러오지 못했어요."));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const create = wrap(async () => {
@@ -95,22 +122,45 @@ function TablesPanel() {
       await refresh();
     })();
 
-  const disable = (id: string) =>
+  /**
+   * 요구사항2.md §3.2 — status를 직접 PATCH하던 경로는 서버에서 제거됐다.
+   * 사용 중지/재개는 전용 엔드포인트가 상태 머신을 통해 처리하며,
+   * ACTIVE 세션이 있는 테이블은 서버가 409로 거절한다.
+   */
+  const setEnabled = (t: AdminTable, enabled: boolean) =>
     wrap(async () => {
-      await api.patch(`/api/staff/admin/tables/${id}`, { status: "DISABLED" });
+      await api.post(`/api/staff/admin/tables/${t.id}/enabled`, { enabled });
       await refresh();
     })();
 
-  const toggleOrdersLocked = (t: any) =>
+  const toggleOrdersLocked = (t: AdminTable) =>
     wrap(async () => {
       await api.patch(`/api/staff/admin/tables/${t.id}`, { ordersLocked: !t.ordersLocked });
       await refresh();
     })();
 
-  const togglePaymentsLocked = (t: any) =>
+  const togglePaymentsLocked = (t: AdminTable) =>
     wrap(async () => {
       await api.patch(`/api/staff/admin/tables/${t.id}`, { paymentsLocked: !t.paymentsLocked });
       await refresh();
+    })();
+
+  /** 강제 종료 전에 무엇을 남긴 채 닫는지 먼저 보여준다. */
+  const openForceClose = (t: AdminTable) =>
+    wrap(async () => {
+      const preview = await api.get(`/api/staff/admin/tables/${t.id}/force-close-preview`);
+      setForceTarget({ table: t, blockers: preview.blockers });
+    })();
+
+  const confirmForceClose = (reason: string) =>
+    wrap(async () => {
+      const target = forceTarget;
+      if (!target) return;
+      setForceTarget(null);
+      await guard("테이블 강제 종료", async () => {
+        await api.post(`/api/staff/admin/tables/${target.table.id}/force-close`, { reason });
+        await refresh();
+      });
     })();
 
   return (
@@ -122,6 +172,9 @@ function TablesPanel() {
         </button>
       </div>
       {error && <p className="error-text">{error}</p>}
+      <p className="text-muted" style={{ fontSize: "0.85rem" }}>
+        손님 입장에는 QR 주소와 별도로 <strong>이번 자리의 입장 코드</strong>가 필요합니다. 코드는 FRONT 화면에서 확인하세요.
+      </p>
       {tables.map((t) => (
         <div key={t.id} className="list-row">
           <div>
@@ -138,14 +191,55 @@ function TablesPanel() {
               {t.paymentsLocked ? "결제 잠금 해제" : "결제 잠금"}
             </button>
             <button className="btn-secondary" onClick={() => rotate(t.id)}>
-              토큰 회전
+              QR 주소 재발급
             </button>
-            <button className="btn-secondary" onClick={() => disable(t.id)}>
-              비활성화
-            </button>
+            {t.status === "DISABLED" ? (
+              <button className="btn-secondary" onClick={() => setEnabled(t, true)}>
+                사용 재개
+              </button>
+            ) : (
+              <button className="btn-secondary" onClick={() => setEnabled(t, false)}>
+                사용 중지
+              </button>
+            )}
+            {(t.status === "OPEN" || t.status === "SETTLING") && (
+              <button className="btn-danger-outline" onClick={() => openForceClose(t)}>
+                강제 종료
+              </button>
+            )}
           </div>
         </div>
       ))}
+
+      {forceTarget && (
+        <DangerConfirmModal
+          title={`${forceTarget.table.number}번 테이블 강제 종료`}
+          description="정산이나 서빙이 끝나지 않았더라도 세션을 닫습니다. 이 작업은 취소할 수 없고, 남은 금액과 미서빙 주문 현황이 감사 로그에 그대로 기록됩니다."
+          details={
+            forceTarget.blockers.length > 0
+              ? forceTarget.blockers.map((b) => ({ label: b.code, value: b.message }))
+              : [{ label: "현재 상태", value: "막는 사유 없음 (일반 종료로도 닫을 수 있어요)" }]
+          }
+          requireReason
+          reasonPlaceholder="강제 종료 사유 (필수, 기록에 남습니다)"
+          confirmLabel="강제 종료하기"
+          onConfirm={confirmForceClose}
+          onCancel={() => setForceTarget(null)}
+        />
+      )}
+
+      {pending && (
+        <StepUpModal
+          purpose={pending.purpose}
+          mfaEnabled={mfaEnabled}
+          onSuccess={() => {
+            const retry = pending.retry;
+            setPending(null);
+            void retry().catch(() => setError("강제 종료 중 오류가 발생했어요."));
+          }}
+          onCancel={() => setPending(null)}
+        />
+      )}
     </section>
   );
 }
@@ -246,35 +340,104 @@ function MenuPanel() {
   );
 }
 
-function UsersPanel() {
-  const [users, setUsers] = useState<any[]>([]);
+interface AdminUser {
+  id: string;
+  username: string;
+  displayName: string;
+  role: "ADMIN" | "FRONT" | "POS" | "SERVING";
+  isActive: boolean;
+  mustResetPassword: boolean;
+  mfaEnabled: boolean;
+  isBootstrap: boolean;
+  lastLoginAt: string | null;
+}
+
+/**
+ * 직원 계정 관리(요구사항2.md §9.2).
+ *
+ * role 변경 / 비활성화 / 비밀번호 초기화 / MFA 해제는 전부 고위험 작업이라 서버가 step-up
+ * 재인증을 요구하고, 성공 시 대상 계정의 authVersion이 올라가 기존 세션이 즉시 끊긴다.
+ */
+function UsersPanel({ mfaEnabled }: { mfaEnabled: boolean }) {
+  const [users, setUsers] = useState<AdminUser[]>([]);
   const [form, setForm] = useState({ username: "", password: "", displayName: "", role: "FRONT" });
+  const [resetTarget, setResetTarget] = useState<AdminUser | null>(null);
+  const [resetPassword, setResetPassword] = useState("");
+  const [notice, setNotice] = useState<string | null>(null);
   const { error, setError, wrap } = useErrorBanner();
+  const { pending, setPending, guard } = useStepUpGuard();
 
   const refresh = () => api.get("/api/staff/admin/users").then((d) => setUsers(d.users));
   useEffect(() => {
     refresh().catch(() => setError("사용자 목록을 불러오지 못했어요."));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const create = wrap(async () => {
     await api.post("/api/staff/admin/users", form);
     setForm({ username: "", password: "", displayName: "", role: "FRONT" });
+    setNotice("계정을 만들었어요. 첫 로그인 시 본인이 비밀번호를 바꾸도록 안내해 주세요.");
     await refresh();
   });
 
-  const toggleActive = (id: string, current: boolean) =>
+  const toggleActive = (u: AdminUser) =>
     wrap(async () => {
-      await api.patch(`/api/staff/admin/users/${id}`, { isActive: !current });
-      await refresh();
+      setNotice(null);
+      await guard(u.isActive ? `${u.displayName} 계정 비활성화` : `${u.displayName} 계정 활성화`, async () => {
+        await api.patch(`/api/staff/admin/users/${u.id}`, { isActive: !u.isActive });
+        setNotice(
+          u.isActive
+            ? `${u.displayName} 계정을 비활성화했어요. 로그인되어 있던 기기는 즉시 로그아웃됩니다.`
+            : `${u.displayName} 계정을 다시 활성화했어요.`,
+        );
+        await refresh();
+      });
     })();
+
+  const changeRole = (u: AdminUser, role: string) =>
+    wrap(async () => {
+      if (role === u.role) return;
+      setNotice(null);
+      await guard(`${u.displayName} 권한 변경`, async () => {
+        await api.patch(`/api/staff/admin/users/${u.id}`, { role });
+        setNotice(`${u.displayName}의 권한을 ${role}로 바꿨어요. 기존 로그인 세션은 즉시 무효화됩니다.`);
+        await refresh();
+      });
+    })();
+
+  const disableMfa = (u: AdminUser) =>
+    wrap(async () => {
+      setNotice(null);
+      await guard(`${u.displayName} 2단계 인증 해제`, async () => {
+        await api.post(`/api/staff/admin/users/${u.id}/disable-mfa`, {});
+        setNotice(`${u.displayName}의 2단계 인증을 해제했어요. 다음 로그인에서 다시 설정해야 합니다.`);
+        await refresh();
+      });
+    })();
+
+  const submitReset = wrap(async () => {
+    const target = resetTarget;
+    if (!target || !resetPassword) return;
+    setNotice(null);
+    await guard(`${target.displayName} 비밀번호 초기화`, async () => {
+      await api.post(`/api/staff/admin/users/${target.id}/reset-password`, { newPassword: resetPassword });
+      setResetTarget(null);
+      setResetPassword("");
+      setNotice(`${target.displayName}의 비밀번호를 초기화했어요. 본인이 로그인하면 바로 변경하게 됩니다.`);
+      await refresh();
+    });
+  });
 
   return (
     <section>
       <h2>직원 계정 추가</h2>
+      <p className="text-muted" style={{ fontSize: "0.85rem" }}>
+        공용 계정 대신 개인별 계정을 권장합니다. 감사 로그에 누가 한 작업인지 그대로 남아요.
+      </p>
       <input className="field" placeholder="아이디" value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} />
       <input
         className="field"
-        placeholder="초기 비밀번호(8자 이상)"
+        placeholder="초기 비밀번호"
         type="password"
         value={form.password}
         onChange={(e) => setForm({ ...form, password: e.target.value })}
@@ -295,18 +458,83 @@ function UsersPanel() {
         계정 생성
       </button>
       {error && <p className="error-text">{error}</p>}
+      {notice && <p className="text-muted">{notice}</p>}
 
       {users.map((u) => (
         <div key={u.id} className="list-row">
           <div>
-            {u.displayName} ({u.username}) · <span className="badge">{u.role}</span>{" "}
-            {!u.isActive && <span className="badge badge--danger">비활성</span>}
+            <strong>{u.displayName}</strong> ({u.username}) · <span className="badge">{u.role}</span>{" "}
+            {!u.isActive && <span className="badge badge--danger">비활성</span>}{" "}
+            {u.mustResetPassword && <span className="badge badge--warn">비밀번호 변경 필요</span>}{" "}
+            {u.mfaEnabled ? <span className="badge">MFA 사용</span> : <span className="badge badge--warn">MFA 없음</span>}{" "}
+            {u.isBootstrap && <span className="badge badge--warn">부트스트랩 계정</span>}
+            <div className="text-muted">
+              마지막 로그인: {u.lastLoginAt ? new Date(u.lastLoginAt).toLocaleString("ko-KR") : "기록 없음"}
+            </div>
           </div>
-          <button className="btn-secondary" onClick={() => toggleActive(u.id, u.isActive)}>
-            {u.isActive ? "비활성화" : "활성화"}
-          </button>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            <select className="field" style={{ width: 130, margin: 0 }} value={u.role} onChange={(e) => changeRole(u, e.target.value)}>
+              <option value="FRONT">FRONT</option>
+              <option value="POS">POS</option>
+              <option value="SERVING">SERVING</option>
+              <option value="ADMIN">ADMIN</option>
+            </select>
+            <button className="btn-danger-outline" onClick={() => setResetTarget(u)}>
+              비밀번호 초기화
+            </button>
+            {u.mfaEnabled && (
+              <button className="btn-danger-outline" onClick={() => disableMfa(u)}>
+                MFA 해제
+              </button>
+            )}
+            <button className={u.isActive ? "btn-danger-outline" : "btn-secondary"} onClick={() => toggleActive(u)}>
+              {u.isActive ? "비활성화" : "활성화"}
+            </button>
+          </div>
         </div>
       ))}
+
+      {resetTarget && (
+        <div className="sheet-overlay" onClick={() => setResetTarget(null)}>
+          <div className="sheet danger-sheet" onClick={(e) => e.stopPropagation()}>
+            <div className="sheet-handle" />
+            <div className="sheet-header">
+              <h2 className="sheet-title danger-title">{resetTarget.displayName} 비밀번호 초기화</h2>
+              <button type="button" className="sheet-close" onClick={() => setResetTarget(null)}>
+                닫기
+              </button>
+            </div>
+            <p className="sheet-desc">
+              초기화하면 이 계정의 모든 기기가 즉시 로그아웃되고, 본인이 로그인할 때 새 비밀번호를 정하게 됩니다.
+              임시 비밀번호는 안전한 방법으로 직접 전달해 주세요.
+            </p>
+            <input
+              className="field"
+              type="password"
+              placeholder="임시 비밀번호"
+              value={resetPassword}
+              onChange={(e) => setResetPassword(e.target.value)}
+              autoFocus
+            />
+            <button className="btn-danger" onClick={submitReset} disabled={!resetPassword}>
+              초기화하기
+            </button>
+          </div>
+        </div>
+      )}
+
+      {pending && (
+        <StepUpModal
+          purpose={pending.purpose}
+          mfaEnabled={mfaEnabled}
+          onSuccess={() => {
+            const retry = pending.retry;
+            setPending(null);
+            void retry().catch(() => setError("작업을 완료하지 못했어요."));
+          }}
+          onCancel={() => setPending(null)}
+        />
+      )}
     </section>
   );
 }
