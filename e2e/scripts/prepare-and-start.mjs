@@ -33,6 +33,13 @@ const env = {
   POSPW: "e2e-pos-pw-12345678",
   SERVING_ID: "serving",
   SERVING_PW: "e2e-serving-pw-12345678",
+  // E2E 한 번 실행에서 역할별 로그인이 수십 번 일어난다. IP 단위 1차 제한은 풀어두고,
+  // 실제 brute force 방어(loginGuard)는 server/tests/login-guard.test.ts에서 검증한다.
+  STAFF_LOGIN_RATE_LIMIT_PER_5MIN: "100000",
+  CUSTOMER_RATE_LIMIT_PER_MIN: "100000",
+  // production과 동일한 코드 경로를 타도록 보안 키를 명시한다(없으면 SESSION_SECRET에서 파생).
+  AUDIT_HMAC_KEY: "e2e-audit-hmac-key-not-for-prod-0123456789",
+  MFA_ENCRYPTION_KEY: "e2e-mfa-encryption-key-not-for-prod-0123456789",
 };
 
 console.log("[e2e] building client...");

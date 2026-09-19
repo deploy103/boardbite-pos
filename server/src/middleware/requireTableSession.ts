@@ -1,47 +1,49 @@
 import type { Request, Response, NextFunction } from "express";
 import { prisma } from "../prisma.js";
+import { CUSTOMER_SESSION_COOKIE, resolveCustomerSession } from "../services/customerSession.js";
 
-export const TABLE_SESSION_COOKIE = "boardbite_table_token";
+export { CUSTOMER_SESSION_COOKIE };
 
 const CLOSED_MESSAGE = "현재 주문 가능한 테이블이 아닙니다. 입구에서 자리 배정을 먼저 받아주세요.";
 
 /**
- * 손님 API 공통 게이트. docs/adr/0004-table-token.md의 검증 체크리스트를 그대로 구현한다.
- * 1) 쿠키의 토큰이 유효한 TableSession을 가리키는가
- * 2) TableSession.status가 ACTIVE 또는 PAID_PENDING_SERVICE인가(완납 후에도 주문 현황/직원호출은 볼 수 있어야 함)
- * 3) 연결된 Table.status가 OPEN 또는 SETTLING인가
- * 클라이언트가 body/쿼리로 보내는 테이블 식별자는 절대 신뢰하지 않는다 — 오직 쿠키 → 서버 조회 결과만 신뢰한다.
+ * 손님 API 공통 게이트(요구사항2.md §2.2).
  *
- * 신규 주문 생성처럼 "완전히 ACTIVE + OPEN이어야만" 허용되는 동작은 이 미들웨어 통과 후
- * `requireOrderableSession`으로 한 번 더 좁혀서 검사한다.
+ * 쿠키의 raw token → CustomerDeviceSession → TableSession → Table 순으로 서버가 직접 확인한다.
+ * 핵심 변경: 물리 NFC/QR에 인쇄된 `Table.publicSlug`는 더 이상 인증 토큰이 아니다. 손님은
+ * 반드시 이번 세션에만 유효한 join code를 입력해 device session을 발급받아야 하며, 예전에
+ * 저장해둔 `/t/<slug>` 링크만으로는 미래의 어떤 세션에도 들어갈 수 없다.
+ *
+ * 클라이언트가 body/쿼리로 보내는 테이블 식별자는 절대 신뢰하지 않는다.
  */
 export async function requireTableSession(req: Request, res: Response, next: NextFunction) {
-  const token = req.cookies?.[TABLE_SESSION_COOKIE];
+  const token = req.cookies?.[CUSTOMER_SESSION_COOKIE];
   if (!token || typeof token !== "string") {
-    res.status(403).json({ error: CLOSED_MESSAGE });
+    res.status(403).json({ error: CLOSED_MESSAGE, code: "JOIN_REQUIRED" });
     return;
   }
 
-  const session = await prisma.tableSession.findUnique({
-    where: { token },
-    include: { table: true },
-  });
-
-  const sessionOk = session?.status === "ACTIVE" || session?.status === "PAID_PENDING_SERVICE";
-  const tableOk = session?.table.status === "OPEN" || session?.table.status === "SETTLING";
-
-  if (!session || !sessionOk || !tableOk) {
-    res.status(403).json({ error: CLOSED_MESSAGE });
+  const resolved = await resolveCustomerSession(token);
+  if (!resolved) {
+    res.clearCookie(CUSTOMER_SESSION_COOKIE, { path: "/" });
+    res.status(403).json({ error: CLOSED_MESSAGE, code: "JOIN_REQUIRED" });
     return;
   }
 
   req.tableSession = {
-    id: session.id,
-    tableId: session.tableId,
-    tableNumber: session.table.number,
-    sessionStatus: session.status as "ACTIVE" | "PAID_PENDING_SERVICE",
-    tableOrdersLocked: session.table.ordersLocked,
+    id: resolved.tableSessionId,
+    tableId: resolved.tableId,
+    tableNumber: resolved.tableNumber,
+    sessionStatus: resolved.sessionStatus,
+    tableOrdersLocked: resolved.tableOrdersLocked,
+    deviceSessionId: resolved.deviceSessionId,
   };
+
+  // 마지막 접속 시각은 정리 작업/운영 확인용 — 실패해도 요청을 막지 않는다.
+  void prisma.customerDeviceSession
+    .update({ where: { id: resolved.deviceSessionId }, data: { lastSeenAt: new Date() } })
+    .catch(() => undefined);
+
   next();
 }
 

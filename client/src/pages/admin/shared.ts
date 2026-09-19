@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { ApiError } from "../../lib/api.js";
+import { useCallback, useState } from "react";
+import { ApiError, errorMessage } from "../../lib/api.js";
 
 /** AdminHome.tsx의 기존 패널들과 동일한 에러 배너 훅. 새 관리자 패널에서 재사용한다. */
 export function useErrorBanner() {
@@ -9,8 +9,38 @@ export function useErrorBanner() {
       setError(null);
       await fn();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "요청 처리 중 오류가 발생했어요.");
+      setError(errorMessage(err));
     }
   };
   return { error, setError, wrap };
+}
+
+export interface PendingStepUp {
+  purpose: string;
+  retry: () => Promise<void>;
+}
+
+/**
+ * 고위험 작업용 step-up 가드(요구사항2.md §2.5.2).
+ *
+ * 화면이 "이 작업은 재인증이 필요하다"를 미리 알 필요가 없다 — 그냥 호출하고, 서버가
+ * 403 STEP_UP_REQUIRED로 거절하면 비밀번호 확인 창을 띄운 뒤 **같은 작업을 그대로 다시**
+ * 실행한다. 재인증 창은 5분간 유효하므로 연속 작업에서는 한 번만 뜬다.
+ */
+export function useStepUpGuard() {
+  const [pending, setPending] = useState<PendingStepUp | null>(null);
+
+  const guard = useCallback(async (purpose: string, action: () => Promise<void>) => {
+    try {
+      await action();
+    } catch (err) {
+      if (err instanceof ApiError && err.code === "STEP_UP_REQUIRED") {
+        setPending({ purpose, retry: action });
+        return;
+      }
+      throw err;
+    }
+  }, []);
+
+  return { pending, setPending, guard };
 }

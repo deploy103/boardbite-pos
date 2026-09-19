@@ -1,15 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { io, type Socket } from "socket.io-client";
-import { api, ApiError } from "../../lib/api.js";
+import { api, ApiError, errorMessage, reportSocketState } from "../../lib/api.js";
+import ConnectionBanner from "../../components/ConnectionBanner.js";
 import CartSheet from "./CartSheet.js";
+import JoinCodeGate from "./JoinCodeGate.js";
 import MenuSkeleton from "./MenuSkeleton.js";
 import OptionSheet from "./OptionSheet.js";
 import OrderStatusTimeline from "./OrderStatusTimeline.js";
 import type { Bill, CartLine, MenuCategory, MenuItem, Order } from "./types.js";
-import { cartLineKey, lineUnitPrice, REALTIME_EVENTS } from "./types.js";
+import { cartLineKey, lineUnitPrice, orderItemLineTotal, REALTIME_EVENTS } from "./types.js";
 
-type Phase = "loading" | "closed" | "error" | "open";
+/**
+ * `join` = 테이블은 열려 있지만 이 기기에는 아직 입장 권한이 없는 상태.
+ * 저장해 둔 /t/<slug> 링크만으로는 절대 `open`으로 넘어갈 수 없다(요구사항2.md §2.2).
+ */
+type Phase = "loading" | "join" | "closed" | "error" | "open";
 
 const ORDERS_POLL_INTERVAL_MS = 20000;
 
@@ -77,8 +83,21 @@ export default function CustomerApp() {
     }
   }
 
+  /**
+   * 주기적 갱신 중 서버가 "더 이상 이 세션이 아니다"(403 JOIN_REQUIRED)라고 답하면
+   * 소켓 이벤트를 놓쳤더라도 바로 안내 화면으로 전환한다 — 직원이 테이블을 정리한 직후의 상황이다.
+   */
   const refreshOrdersAndBill = useCallback(async () => {
-    await Promise.all([loadOrders(), loadBill()]);
+    try {
+      await Promise.all([loadOrders(), loadBill()]);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 403) {
+        markTableClosed();
+        return;
+      }
+      throw err;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadOrders, loadBill]);
 
   function markTableClosed() {
@@ -104,6 +123,11 @@ export default function CustomerApp() {
           return;
         }
         setTableNumber(data.tableNumber);
+        if (!data.joined) {
+          // 코드 입력 전에는 메뉴/주문 API를 부르지 않는다 — 서버도 401로 막는다.
+          setPhase("join");
+          return;
+        }
         setPhase("open");
         void refreshAll();
       } catch {
@@ -124,8 +148,12 @@ export default function CustomerApp() {
     const socket: Socket = io({ withCredentials: true });
 
     socket.on("connect", () => {
+      reportSocketState(true);
+      // 끊긴 동안 바뀐 것이 있을 수 있으므로 재연결 때마다 서버 상태를 다시 읽는다.
       void refreshOrdersAndBill();
     });
+    socket.on("disconnect", () => reportSocketState(false));
+    socket.on("connect_error", () => reportSocketState(false));
     socket.on(REALTIME_EVENTS.OrderCreated, () => {
       void refreshOrdersAndBill();
     });
@@ -147,6 +175,7 @@ export default function CustomerApp() {
     return () => {
       clearInterval(interval);
       socket.disconnect();
+      reportSocketState(true);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase]);
@@ -209,7 +238,7 @@ export default function CustomerApp() {
       setView("orders");
       await refreshOrdersAndBill();
     } catch (err) {
-      setOrderError(err instanceof ApiError ? err.message : "잠시 후 다시 시도해 주세요.");
+      setOrderError(errorMessage(err, "잠시 후 다시 시도해 주세요."));
     } finally {
       setSubmitting(false);
     }
@@ -238,6 +267,22 @@ export default function CustomerApp() {
     );
   }
 
+  if (phase === "join") {
+    return (
+      <>
+        <ConnectionBanner />
+        <JoinCodeGate
+          slug={slug!}
+          tableNumber={tableNumber}
+          onJoined={() => {
+            setPhase("open");
+            void refreshAll();
+          }}
+        />
+      </>
+    );
+  }
+
   if (phase === "closed") {
     return (
       <div className="page" style={{ paddingTop: "20vh", textAlign: "center" }}>
@@ -253,6 +298,7 @@ export default function CustomerApp() {
 
   return (
     <div className="page">
+      <ConnectionBanner />
       <div className="table-hero">
         <div className="table-hero__number">{tableNumber}번 테이블</div>
         <div className="table-hero__status">
@@ -388,7 +434,7 @@ export default function CustomerApp() {
                       </span>
                     )}
                   </span>
-                  <span>{(item.unitPrice * item.quantity).toLocaleString()}원</span>
+                  <span>{orderItemLineTotal(item).toLocaleString()}원</span>
                 </div>
               ))}
               {order.note && <div className="order-card__note">요청사항: {order.note}</div>}

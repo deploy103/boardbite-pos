@@ -3,9 +3,16 @@
 
 export type StaffRole = "ADMIN" | "FRONT" | "POS" | "SERVING";
 export type TableStatus = "DISABLED" | "AVAILABLE" | "OPEN" | "SETTLING";
-export type TableSessionStatus = "ACTIVE" | "CLOSED" | "EXPIRED";
+export type TableSessionStatus = "ACTIVE" | "PAID_PENDING_SERVICE" | "CLOSED" | "EXPIRED";
 export type OrderStatus = "NEW" | "ACCEPTED" | "PREPARING" | "READY" | "SERVED" | "REJECTED" | "CANCELLED";
-export type PaymentKind = "CHARGE" | "VOID" | "REFUND";
+export type PaymentKind = "CHARGE" | "DISCOUNT" | "VOID" | "REFUND";
+export type StaffCallStatus = "PENDING" | "ACKED" | "DONE";
+
+/** 아직 서빙되지 않아 "테이블을 정리하면 안 되는" 주문 상태들. */
+export const ACTIVE_ORDER_STATUSES = ["NEW", "ACCEPTED", "PREPARING", "READY"] as const;
+
+/** 손님이 접근할 수 있는 테이블 세션 상태. */
+export const CUSTOMER_VISIBLE_SESSION_STATUSES = ["ACTIVE", "PAID_PENDING_SERVICE"] as const;
 
 export function asStaffRole(value: string): StaffRole {
   return value as StaffRole;

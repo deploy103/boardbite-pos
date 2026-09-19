@@ -2,54 +2,119 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../prisma.js";
 import { isProduction } from "../env.js";
-import { requireTableSession, requireOrderableSession, TABLE_SESSION_COOKIE } from "../middleware/requireTableSession.js";
+import { requireTableSession, requireOrderableSession } from "../middleware/requireTableSession.js";
+import {
+  CUSTOMER_SESSION_COOKIE,
+  CUSTOMER_SESSION_TTL_MS,
+  issueDeviceSession,
+  joinCodeMatches,
+  resolveCustomerSession,
+} from "../services/customerSession.js";
 import { createOrder, OrderValidationError } from "../services/order.js";
 import { computeBill } from "../services/billing.js";
-import { recordAuditLog } from "../services/auditLog.js";
+import { recordAuditLog, recordAuditLogBestEffort } from "../services/auditLog.js";
 import { appEvents, RealtimeEvent } from "../realtime.js";
 
 export const customerRouter = Router();
 
-const TABLE_COOKIE_MAX_AGE_MS = 12 * 60 * 60 * 1000; // 12시간 — 자정 넘는 장시간 행사 대비 여유
+const CLOSED_MESSAGE = "현재 주문 가능한 테이블이 아닙니다. 입구에서 자리 배정을 먼저 받아주세요.";
 
-// 물리 QR/NFC에 인코딩된 고정 slug 진입점. docs/adr/0004-table-token.md
+/**
+ * 물리 QR/NFC에 인코딩된 고정 slug 진입점.
+ *
+ * 요구사항2.md §2.2: 여기서는 **어떤 접근 권한도 발급하지 않는다**. 테이블이 지금 열려 있는지와,
+ * 이 브라우저가 이미 유효한 device session을 갖고 있는지만 알려준다. 권한이 없으면 클라이언트가
+ * join code 입력 화면을 띄운다.
+ */
 customerRouter.get("/entry/:slug", async (req, res) => {
   const { slug } = req.params;
   const table = await prisma.table.findUnique({ where: { publicSlug: slug } });
 
-  if (!table || (table.status !== "OPEN" && table.status !== "SETTLING")) {
-    res.clearCookie(TABLE_SESSION_COOKIE);
-    res.json({
-      open: false,
-      tableNumber: table?.number ?? null,
-      message: "현재 주문 가능한 테이블이 아닙니다. 입구에서 자리 배정을 먼저 받아주세요.",
-    });
+  const session =
+    table && (table.status === "OPEN" || table.status === "SETTLING")
+      ? await prisma.tableSession.findFirst({
+          where: { tableId: table.id, status: { in: ["ACTIVE", "PAID_PENDING_SERVICE"] } },
+          orderBy: { openedAt: "desc" },
+        })
+      : null;
+
+  if (!table || !session) {
+    res.json({ open: false, joined: false, tableNumber: table?.number ?? null, message: CLOSED_MESSAGE });
     return;
   }
 
-  const session = await prisma.tableSession.findFirst({
-    where: { tableId: table.id, status: { in: ["ACTIVE", "PAID_PENDING_SERVICE"] } },
-    orderBy: { openedAt: "desc" },
-  });
+  // 이미 이 세션에 입장한 기기인지 확인한다. 다른 테이블/이전 세션의 쿠키는 joined=false가 된다.
+  const existingToken = req.cookies?.[CUSTOMER_SESSION_COOKIE];
+  const resolved = typeof existingToken === "string" ? await resolveCustomerSession(existingToken) : null;
+  const joined = resolved?.tableSessionId === session.id;
 
-  if (!session) {
-    res.clearCookie(TABLE_SESSION_COOKIE);
-    res.json({
-      open: false,
-      tableNumber: table.number,
-      message: "현재 주문 가능한 테이블이 아닙니다. 입구에서 자리 배정을 먼저 받아주세요.",
-    });
+  res.json({ open: true, joined, tableNumber: table.number });
+});
+
+const joinSchema = z.object({ joinCode: z.string().min(4).max(10) });
+
+/**
+ * join code로 이 세션의 손님 기기 세션을 발급받는다.
+ *
+ * - 현재 ACTIVE/PAID_PENDING_SERVICE인 세션의 코드만 통한다.
+ * - 이전 세션의 코드는 재OPEN 후 절대 통하지 않는다(코드가 세션마다 새로 발급되고
+ *   해시가 tableSessionId로 도메인 분리되어 있기 때문).
+ * - 실패 메시지는 "코드가 틀렸다" 한 가지로 통일해 코드 존재 여부를 노출하지 않는다.
+ * - 무차별 대입은 app.ts의 전용 rate limiter가 IP+테이블 단위로 제한한다.
+ */
+customerRouter.post("/join/:slug", async (req, res) => {
+  const parsed = joinSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "입장 코드를 입력해 주세요." });
     return;
   }
 
-  res.cookie(TABLE_SESSION_COOKIE, session.token, {
+  const table = await prisma.table.findUnique({ where: { publicSlug: req.params.slug } });
+  const session =
+    table && (table.status === "OPEN" || table.status === "SETTLING")
+      ? await prisma.tableSession.findFirst({
+          where: { tableId: table.id, status: { in: ["ACTIVE", "PAID_PENDING_SERVICE"] } },
+          orderBy: { openedAt: "desc" },
+        })
+      : null;
+
+  if (!table || !session) {
+    res.status(403).json({ error: CLOSED_MESSAGE });
+    return;
+  }
+
+  const code = parsed.data.joinCode.trim();
+  if (!joinCodeMatches(session.id, session.joinCodeHash, code)) {
+    await recordAuditLogBestEffort({
+      actorType: "SYSTEM",
+      action: "CUSTOMER_JOIN_FAILED",
+      targetType: "TableSession",
+      targetId: session.id,
+      metadata: { tableNumber: table.number },
+    });
+    res.status(401).json({ error: "입장 코드가 올바르지 않아요. 직원에게 코드를 다시 확인해 주세요." });
+    return;
+  }
+
+  const { rawToken } = await issueDeviceSession(session.id);
+
+  res.cookie(CUSTOMER_SESSION_COOKIE, rawToken, {
     httpOnly: true,
     secure: isProduction,
     sameSite: "lax",
-    maxAge: TABLE_COOKIE_MAX_AGE_MS,
+    maxAge: CUSTOMER_SESSION_TTL_MS,
     path: "/",
   });
-  res.json({ open: true, tableNumber: table.number });
+
+  await recordAuditLogBestEffort({
+    actorType: "SYSTEM",
+    action: "CUSTOMER_JOINED",
+    targetType: "TableSession",
+    targetId: session.id,
+    metadata: { tableNumber: table.number },
+  });
+
+  res.json({ open: true, joined: true, tableNumber: table.number });
 });
 
 customerRouter.get("/menu", requireTableSession, async (_req, res) => {
@@ -109,18 +174,25 @@ customerRouter.get("/staff-call", requireTableSession, async (req, res) => {
 });
 
 customerRouter.post("/staff-call", requireTableSession, async (req, res) => {
-  const existing = await prisma.staffCallRequest.findFirst({
-    where: { tableSessionId: req.tableSession!.id, status: { in: ["PENDING", "ACKED"] } },
+  const tableSessionId = req.tableSession!.id;
+
+  // "조회 후 생성" 사이에 손님이 두 번 누르면 호출이 두 건 생길 수 있다. 트랜잭션 안에서
+  // 다시 확인해 세션당 미처리 호출이 항상 최대 1건이 되게 한다(요구사항2.md §3.6).
+  const { call, created } = await prisma.$transaction(async (tx) => {
+    const existing = await tx.staffCallRequest.findFirst({
+      where: { tableSessionId, status: { in: ["PENDING", "ACKED"] } },
+      orderBy: { createdAt: "desc" },
+    });
+    if (existing) return { call: existing, created: false };
+    return { call: await tx.staffCallRequest.create({ data: { tableSessionId } }), created: true };
   });
-  if (existing) {
-    res.status(200).json({ call: existing });
+
+  if (!created) {
+    res.status(200).json({ call });
     return;
   }
 
-  const call = await prisma.staffCallRequest.create({
-    data: { tableSessionId: req.tableSession!.id },
-  });
-  await recordAuditLog({
+  await recordAuditLogBestEffort({
     actorType: "SYSTEM",
     action: "STAFF_CALL_REQUESTED",
     targetType: "StaffCallRequest",

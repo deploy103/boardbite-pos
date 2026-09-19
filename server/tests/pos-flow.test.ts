@@ -1,20 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { app, createStaff, loginAgent, createTableWithMenu } from "./helpers.js";
+import { createStaff, loginAgent, createTableWithMenu, openTableAndJoin } from "./helpers.js";
 import { prisma } from "../src/prisma.js";
 
 describe("POS/KDS 주문 상태 전이", () => {
   async function setupOrder() {
-    const request = (await import("supertest")).default;
     const { table, menuItem } = await createTableWithMenu();
     const front = await loginAgent((await createStaff("FRONT")).username, "testpass1234");
-    const openRes = await front
-      .post(`/api/staff/front/tables/${table.id}/open`)
-      .set("X-BoardBite-Client", "1")
-      .send({ guestCount: 2 });
-    expect(openRes.status).toBe(201);
-
-    const customer = request.agent(app);
-    await customer.get(`/api/customer/entry/${table.publicSlug}`);
+    const { customer } = await openTableAndJoin(front, table.id, table.publicSlug);
     const orderRes = await customer
       .post("/api/customer/orders")
       .set("X-BoardBite-Client", "1")

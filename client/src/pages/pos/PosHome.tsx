@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError } from "../../lib/api.js";
 import { useStaffMe } from "../../lib/useStaffMe.js";
 import { useStaffSocket } from "../../lib/useStaffSocket.js";
+import ConnectionBanner from "../../components/ConnectionBanner.js";
 import { useOperationSettings } from "../../lib/useOperationSettings.js";
 import { playBeep } from "../../lib/beep.js";
 import OrderCard, { type KdsOrder } from "./OrderCard.js";
@@ -60,7 +61,7 @@ export default function PosHome() {
     prevNewCount.current = board.NEW.length;
   }, [board.NEW.length, muted]);
 
-  useStaffSocket("pos", () => {
+  useStaffSocket(() => {
     loadBoard();
   });
 
@@ -97,6 +98,7 @@ export default function PosHome() {
 
   return (
     <div className="page page--wide">
+      <ConnectionBanner />
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <h1>POS · 주방(KDS)</h1>
         <button className="btn-secondary" onClick={toggleMute}>

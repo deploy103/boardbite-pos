@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { createStaff, loginAgent, createTableWithMenu } from "./helpers.js";
+import { createStaff, loginAgent, createTableWithMenu, elevate } from "./helpers.js";
 import { prisma } from "../src/prisma.js";
 
 async function loginAsAdmin() {
@@ -65,8 +65,19 @@ describe("관리자 API 입력 검증 및 감사 로그", () => {
     expect(log).toBeNull();
   });
 
-  it("존재하지 않는 사용자 id로 PATCH 시도 시 404를 반환한다", async () => {
-    const admin = await loginAsAdmin();
+  it("사용자 PATCH는 step-up 재인증 없이는 403으로 막히고, 재인증 후에는 정상 판정된다", async () => {
+    const { username, password } = await createStaff("ADMIN");
+    const admin = await loginAgent(username, password);
+
+    const beforeStepUp = await admin
+      .patch("/api/staff/admin/users/nonexistent-user-id")
+      .set("X-BoardBite-Client", "1")
+      .send({ displayName: "유령직원" });
+    expect(beforeStepUp.status).toBe(403);
+    expect(beforeStepUp.body.code).toBe("STEP_UP_REQUIRED");
+
+    await elevate(admin, password);
+
     const res = await admin
       .patch("/api/staff/admin/users/nonexistent-user-id")
       .set("X-BoardBite-Client", "1")

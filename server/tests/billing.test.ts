@@ -13,7 +13,7 @@ async function createTableSession() {
   const { username } = await createStaff("FRONT");
   const staff = await prisma.staffUser.findUniqueOrThrow({ where: { username } });
   const session = await prisma.tableSession.create({
-    data: { tableId: table.id, token: `token_${table.id}_${Date.now()}`, openedById: staff.id },
+    data: { tableId: table.id, openedById: staff.id },
   });
   return session;
 }

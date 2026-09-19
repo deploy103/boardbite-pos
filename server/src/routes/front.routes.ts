@@ -1,14 +1,23 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../prisma.js";
-import { requireRole } from "../middleware/requireRole.js";
-import { openTable, closeTable, extendGameTime, TableSessionError, currentGameEndsAt } from "../services/tableSession.js";
+import { staffGate, requireStepUp } from "../middleware/requireRole.js";
+import {
+  openTable,
+  closeTable,
+  extendGameTime,
+  rotateJoinCode,
+  evaluateCloseBlockers,
+  TableSessionError,
+  TableCloseBlockedError,
+  currentGameEndsAt,
+} from "../services/tableSession.js";
 import { computeBill, computeItemPaymentStatus } from "../services/billing.js";
 import { createPayment, createDiscount, voidPayment, PaymentValidationError } from "../services/payment.js";
 import { splitEvenly } from "../services/splitEvenly.js";
 
 export const frontRouter = Router();
-frontRouter.use(requireRole("FRONT"));
+frontRouter.use(staffGate("FRONT"));
 
 frontRouter.get("/game-plans", async (_req, res) => {
   const plans = await prisma.gameTimePlan.findMany({ where: { isActive: true }, orderBy: { minutes: "asc" } });
@@ -77,12 +86,14 @@ frontRouter.post("/tables/:tableId/open", async (req, res) => {
     return;
   }
   try {
-    const session = await openTable({
+    const { session, joinCode, gameEndsAt } = await openTable({
       tableId: req.params.tableId,
-      openedById: req.session.staffUserId!,
+      openedById: req.staff!.id,
       ...parsed.data,
     });
-    res.status(201).json({ session });
+    // 평문 join code는 DB에 남지 않으므로 이 응답이 유일한 전달 경로다.
+    // FRONT는 이 값을 손님에게 즉시 안내해야 한다(요구사항2.md §2.2 FRONT UI).
+    res.status(201).json({ session, joinCode, gameEndsAt });
   } catch (err) {
     if (err instanceof TableSessionError) {
       res.status(err.status).json({ error: err.message });
@@ -94,6 +105,28 @@ frontRouter.post("/tables/:tableId/open", async (req, res) => {
 
 const closeSchema = z.object({ reason: z.string().max(200).optional() });
 
+/**
+ * 종료 버튼을 누르기 전에 무엇이 막고 있는지 미리 보여주기 위한 조회(요구사항2.md §3.1).
+ * 실제 차단은 close API가 트랜잭션 안에서 다시 판단하므로, 여기서는 UX용 힌트만 제공한다.
+ */
+frontRouter.get("/tables/:tableId/close-preflight", async (req, res) => {
+  const session = await prisma.tableSession.findFirst({
+    where: { tableId: req.params.tableId, status: { in: ["ACTIVE", "PAID_PENDING_SERVICE"] } },
+    orderBy: { openedAt: "desc" },
+  });
+  if (!session) {
+    res.status(404).json({ error: "진행 중인 테이블 세션이 없어요." });
+    return;
+  }
+  const blockers = await evaluateCloseBlockers(session.id);
+  res.json({ canClose: blockers.length === 0, blockers });
+});
+
+/**
+ * FRONT 일반 종료. 더 이상 force로 실행되지 않는다(요구사항2.md §3.1) —
+ * 미결제/미서빙/미처리 호출이 남아 있으면 409와 함께 구체적인 사유를 돌려준다.
+ * 그래도 종료해야 하는 예외 상황은 ADMIN 강제 종료(admin.routes.ts)로만 가능하다.
+ */
 frontRouter.post("/tables/:tableId/close", async (req, res) => {
   const parsed = closeSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -103,11 +136,35 @@ frontRouter.post("/tables/:tableId/close", async (req, res) => {
   try {
     const session = await closeTable({
       tableId: req.params.tableId,
-      closedById: req.session.staffUserId!,
+      closedById: req.staff!.id,
       reason: parsed.data.reason,
-      force: true,
+      force: false,
     });
     res.json({ session });
+  } catch (err) {
+    if (err instanceof TableCloseBlockedError) {
+      res.status(err.status).json({ error: err.message, code: "CLOSE_BLOCKED", blockers: err.blockers });
+      return;
+    }
+    if (err instanceof TableSessionError) {
+      res.status(err.status).json({ error: err.message });
+      return;
+    }
+    throw err;
+  }
+});
+
+/**
+ * join code 재발급. 평문을 저장하지 않으므로 "손님이 코드를 잊었다"는 상황의 유일한 복구 수단이다.
+ * 이미 입장한 기기는 그대로 쓰고, 새로 입장하는 기기만 새 코드를 사용한다.
+ */
+frontRouter.post("/table-sessions/:tableSessionId/rotate-join-code", async (req, res) => {
+  try {
+    const joinCode = await rotateJoinCode({
+      tableSessionId: req.params.tableSessionId,
+      staffId: req.staff!.id,
+    });
+    res.json({ joinCode });
   } catch (err) {
     if (err instanceof TableSessionError) {
       res.status(err.status).json({ error: err.message });
@@ -129,7 +186,7 @@ frontRouter.post("/table-sessions/:tableSessionId/extend-game", async (req, res)
     const usage = await extendGameTime({
       tableSessionId: req.params.tableSessionId,
       planId: parsed.data.planId,
-      staffId: req.session.staffUserId!,
+      staffId: req.staff!.id,
     });
     res.status(201).json({ usage });
   } catch (err) {
@@ -253,7 +310,7 @@ frontRouter.post("/table-sessions/:tableSessionId/payments", async (req, res) =>
       tenderedAmount: parsed.data.tenderedAmount,
       allocations: parsed.data.allocations,
       payerLabel: parsed.data.payerLabel,
-      createdById: req.session.staffUserId!,
+      createdById: req.staff!.id,
     });
     res.status(201).json(result);
   } catch (err) {
@@ -283,7 +340,7 @@ frontRouter.post("/table-sessions/:tableSessionId/discount", async (req, res) =>
       idempotencyKey: parsed.data.idempotencyKey,
       amount: parsed.data.amount,
       reason: parsed.data.reason,
-      createdById: req.session.staffUserId!,
+      createdById: req.staff!.id,
     });
     res.status(201).json(result);
   } catch (err) {
@@ -297,14 +354,18 @@ frontRouter.post("/table-sessions/:tableSessionId/discount", async (req, res) =>
 
 const voidPaymentSchema = z.object({ reason: z.string().min(1).max(200) });
 
-frontRouter.post("/payments/:paymentId/void", async (req, res) => {
+/**
+ * 결제 취소(VOID) / 환불(REFUND). 돈을 되돌리는 작업이라 요구사항2.md §2.5.2의 고위험 목록에 있다 —
+ * 사유 입력에 더해 최근 5분 이내의 step-up 재인증(비밀번호, MFA 계정은 TOTP까지)을 요구한다.
+ */
+frontRouter.post("/payments/:paymentId/void", requireStepUp, async (req, res) => {
   const parsed = voidPaymentSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "취소 사유를 입력해 주세요." });
     return;
   }
   try {
-    const result = await voidPayment(req.params.paymentId, req.session.staffUserId!, parsed.data.reason);
+    const result = await voidPayment(req.params.paymentId, req.staff!.id, parsed.data.reason);
     res.json(result);
   } catch (err) {
     if (err instanceof PaymentValidationError) {

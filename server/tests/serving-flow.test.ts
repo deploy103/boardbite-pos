@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import request from "supertest";
-import { app, createStaff, loginAgent, createTableWithMenu, openTableSessionDirect, createOrderWithItem } from "./helpers.js";
+import { createStaff, loginAgent, createTableWithMenu, openTableSessionDirect, createOrderWithItem, joinCustomer } from "./helpers.js";
 import { prisma } from "../src/prisma.js";
 
 describe("SERVING", () => {
@@ -74,8 +74,7 @@ describe("직원 호출", () => {
     const { table } = await createTableWithMenu();
     const front = await createStaff("FRONT");
     const session = await openTableSessionDirect(table.id, front.username);
-    const customer = request.agent(app);
-    await customer.get(`/api/customer/entry/${table.publicSlug}`);
+    const customer = await joinCustomer(table.publicSlug, session.joinCode);
     return { customer, session };
   }
 

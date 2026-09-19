@@ -1,14 +1,17 @@
 import { describe, it, expect } from "vitest";
 import request from "supertest";
-import { app, createStaff, loginAgent, createTableWithMenu } from "./helpers.js";
+import { app, createStaff, loginAgent, createTableWithMenu, openTableAndJoin, joinCustomer } from "./helpers.js";
 import { prisma } from "../src/prisma.js";
 
+/**
+ * 테이블을 열고, 그 세션의 join code로 손님을 입장시킨다.
+ * publicSlug만으로는 아무 권한도 생기지 않으므로(요구사항2.md §2.2) join 단계가 반드시 필요하다.
+ */
 async function openTableAndEnter(front: Awaited<ReturnType<typeof loginAgent>>, tableId: string, slug: string) {
-  const openRes = await front.post(`/api/staff/front/tables/${tableId}/open`).set("X-BoardBite-Client", "1").send({ guestCount: 2 });
-  expect(openRes.status).toBe(201);
-  const customer = request.agent(app);
+  const { customer } = await openTableAndJoin(front, tableId, slug);
   const entryRes = await customer.get(`/api/customer/entry/${slug}`);
   expect(entryRes.body.open).toBe(true);
+  expect(entryRes.body.joined).toBe(true);
   return customer;
 }
 
@@ -104,9 +107,10 @@ describe("주문 생성", () => {
       .send({ guestCount: 4 });
     expect(reopenRes.status).toBe(201);
 
-    const secondCustomer = request.agent(app);
+    const secondCustomer = await joinCustomer(table.publicSlug, reopenRes.body.joinCode);
     const entryRes = await secondCustomer.get(`/api/customer/entry/${table.publicSlug}`);
     expect(entryRes.body.open).toBe(true);
+    expect(entryRes.body.joined).toBe(true);
 
     const secondOrderRes = await secondCustomer
       .post("/api/customer/orders")
