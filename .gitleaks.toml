@@ -6,11 +6,18 @@ useDefault = true
 
 [allowlist]
 description = """
-e2e/ 아래의 계정 문자열은 Playwright E2E 테스트 전용 더미 자격증명이다.
-매 CI 실행마다 새로 만들어지는 격리된 SQLite DB(server/prisma/e2e.db, .gitignore 처리됨)에만
-쓰이는 값이며, 운영 환경과는 무관하다(docs/adr/0003-auth-session.md, e2e/scripts/prepare-and-start.mjs 참고).
-실제 비밀번호처럼 보이는 고엔트로피 문자열이라 gitleaks의 generic-api-key 규칙이 오탐한다.
+테스트 전용 더미 자격증명 경로다. 운영 환경과는 무관한 값만 들어간다.
+
+- e2e/ : Playwright E2E 전용 계정 문자열. 매 CI 실행마다 새로 만들어지는 격리된
+  SQLite DB(server/prisma/e2e.db, .gitignore 처리됨)에만 쓰인다.
+  (docs/adr/0003-auth-session.md, e2e/scripts/prepare-and-start.mjs 참고)
+- server/tests/ : vitest 픽스처 비밀번호. setupEnv.ts가 주입하는 테스트 전용
+  환경변수와 각 테스트가 직접 만드는 계정 비밀번호이며, test.db에만 쓰인다.
+
+둘 다 실제 비밀번호처럼 보이는 고엔트로피 문자열이라 gitleaks의 generic-api-key
+규칙이 오탐한다.
 """
 paths = [
   '''e2e/.*''',
+  '''server/tests/.*''',
 ]
