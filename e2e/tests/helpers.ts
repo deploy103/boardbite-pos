@@ -5,18 +5,24 @@ import { request as pwRequest, devices } from "@playwright/test";
 export const customerDevice = devices["iPhone 13"];
 
 /**
- * 부트스트랩 계정은 시드 직후 `mustResetPassword=true` 상태라 업무 화면에 들어갈 수 없다
- * (요구사항2.md §2.4). 실제 운영에서도 행사 전에 담당자가 한 번 바꾸고 시작하므로,
- * E2E도 global-setup에서 동일하게 "초기 비밀번호 → 운영 비밀번호" 전환을 한 번 수행한다.
+ * 시드가 만드는 계정은 부트스트랩 ADMIN 하나뿐이고, 그 계정은 `mustResetPassword=true` 상태라
+ * 업무 화면에 들어갈 수 없다(요구사항2.md §2.4). 실제 운영에서도 행사 전에 담당자가 한 번
+ * 바꾸고 시작하므로, E2E도 global-setup에서 동일하게 "초기 비밀번호 → 운영 비밀번호"
+ * 전환을 한 번 수행한다.
+ *
+ * FRONT/POS/SERVING 계정은 시드되지 않는다 — global-setup이 이 ADMIN으로 로그인해
+ * 관리자 API(POST /api/staff/admin/users)로 만든다. 실제 운영 절차와 같은 경로다.
  */
-export const BOOTSTRAP_PASSWORDS = {
-  admin: "e2e-admin-pw-12345678",
-  front: "e2e-front-pw-12345678",
-  pos: "e2e-pos-pw-12345678",
-  serving: "e2e-serving-pw-12345678",
+export const BOOTSTRAP_ADMIN_PASSWORD = "e2e-admin-pw-12345678";
+
+/** global-setup이 ADMIN 화면에서 만드는 직원 계정들(역할별 1개). */
+export const STAFF_ROLES = {
+  front: "FRONT",
+  pos: "POS",
+  serving: "SERVING",
 } as const;
 
-/** 비밀번호 변경을 마친 뒤 모든 테스트가 사용하는 자격 증명. */
+/** 온보딩/생성을 마친 뒤 모든 테스트가 사용하는 자격 증명. */
 export const CREDENTIALS = {
   admin: { username: "admin", password: "e2e-admin-operational-pw-2026" },
   front: { username: "front", password: "e2e-front-operational-pw-2026" },

@@ -4,7 +4,13 @@ import { useStaffMe } from "../lib/useStaffMe.js";
 import ConnectionBanner from "../components/ConnectionBanner.js";
 import StepUpModal from "../components/StepUpModal.js";
 import DangerConfirmModal from "../components/DangerConfirmModal.js";
-import { useErrorBanner, useStepUpGuard } from "./admin/shared.js";
+import {
+  useErrorBanner,
+  useStepUpGuard,
+  minPasswordLength,
+  MIN_ADMIN_PASSWORD_LENGTH,
+  MIN_STAFF_PASSWORD_LENGTH,
+} from "./admin/shared.js";
 import ClosingPanel from "./admin/ClosingPanel.js";
 import PaymentMethodsPanel from "./admin/PaymentMethodsPanel.js";
 import PaymentsPanel from "./admin/PaymentsPanel.js";
@@ -373,11 +379,17 @@ function UsersPanel({ mfaEnabled }: { mfaEnabled: boolean }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // 직원 계정은 이 화면에서만 만들어진다(시드는 부트스트랩 ADMIN 하나만 생성한다).
+  // ADMIN 역할 생성은 권한 상승이라 서버가 step-up을 요구하므로 guard로 감싼다 —
+  // 서버가 403 STEP_UP_REQUIRED를 주면 재인증 창이 뜨고 같은 요청이 그대로 재시도된다.
   const create = wrap(async () => {
-    await api.post("/api/staff/admin/users", form);
-    setForm({ username: "", password: "", displayName: "", role: "FRONT" });
-    setNotice("계정을 만들었어요. 첫 로그인 시 본인이 비밀번호를 바꾸도록 안내해 주세요.");
-    await refresh();
+    setNotice(null);
+    await guard(`${form.role} 계정 생성`, async () => {
+      await api.post("/api/staff/admin/users", form);
+      setForm({ username: "", password: "", displayName: "", role: "FRONT" });
+      setNotice("계정을 만들었어요. 첫 로그인 시 본인이 비밀번호를 바꾸도록 안내해 주세요.");
+      await refresh();
+    });
   });
 
   const toggleActive = (u: AdminUser) =>
@@ -432,13 +444,15 @@ function UsersPanel({ mfaEnabled }: { mfaEnabled: boolean }) {
     <section>
       <h2>직원 계정 추가</h2>
       <p className="text-muted" style={{ fontSize: "0.85rem" }}>
-        공용 계정 대신 개인별 계정을 권장합니다. 감사 로그에 누가 한 작업인지 그대로 남아요.
+        FRONT/POS/SERVING 계정은 이 화면에서만 만들 수 있습니다. 공용 계정 대신 개인별 계정을
+        권장합니다 — 감사 로그에 누가 한 작업인지 그대로 남아요.
       </p>
       <input className="field" placeholder="아이디" value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} />
       <input
         className="field"
-        placeholder="초기 비밀번호"
+        placeholder={`초기 비밀번호 (${minPasswordLength(form.role)}자 이상)`}
         type="password"
+        minLength={minPasswordLength(form.role)}
         value={form.password}
         onChange={(e) => setForm({ ...form, password: e.target.value })}
       />
@@ -454,6 +468,11 @@ function UsersPanel({ mfaEnabled }: { mfaEnabled: boolean }) {
         <option value="SERVING">SERVING</option>
         <option value="ADMIN">ADMIN</option>
       </select>
+      <p className="text-muted" style={{ fontSize: "0.85rem" }}>
+        {form.role === "ADMIN"
+          ? `관리자 계정은 비밀번호 ${MIN_ADMIN_PASSWORD_LENGTH}자 이상 + 2단계 인증(TOTP) 등록을 마쳐야 관리 기능이 열립니다. 생성하려면 본인 확인이 한 번 더 필요해요.`
+          : `직원 계정은 비밀번호 ${MIN_STAFF_PASSWORD_LENGTH}자 이상이면 됩니다. 2단계 인증은 선택이며, 등록 여부는 아래 목록의 배지로 확인할 수 있어요.`}
+      </p>
       <button className="btn-primary" onClick={create}>
         계정 생성
       </button>
@@ -511,7 +530,8 @@ function UsersPanel({ mfaEnabled }: { mfaEnabled: boolean }) {
             <input
               className="field"
               type="password"
-              placeholder="임시 비밀번호"
+              placeholder={`임시 비밀번호 (${minPasswordLength(resetTarget.role)}자 이상)`}
+              minLength={minPasswordLength(resetTarget.role)}
               value={resetPassword}
               onChange={(e) => setResetPassword(e.target.value)}
               autoFocus
