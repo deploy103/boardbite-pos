@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../prisma.js";
-import { staffGate, requireStepUp } from "../middleware/requireRole.js";
+import { staffGate, requireStepUp, isElevated } from "../middleware/requireRole.js";
 import { hashPassword } from "../auth/password.js";
 import { validatePasswordPolicy } from "../env.js";
 import { generateToken } from "../services/tableToken.js";
@@ -74,14 +74,31 @@ const createUserSchema = z.object({
   role: z.enum(["ADMIN", "FRONT", "POS", "SERVING"]),
 });
 
-// 개인별 계정 생성(요구사항2.md §9.2). 길이/기본값 정책은 환경별 기준을 그대로 따른다.
+/**
+ * 직원 계정 생성(요구사항2.md §9.2). 시드는 ADMIN 하나만 만들므로 FRONT/POS/SERVING 계정은
+ * 전부 이 경로로만 생긴다 — 라우터 전체가 staffGate("ADMIN") 뒤에 있으므로 관리자 화면에서만 가능하다.
+ *
+ * 비밀번호 최소 길이는 만들려는 역할이 결정한다(ADMIN 15자 / 그 외 10자).
+ * ADMIN 계정 생성은 권한 상승에 해당하므로 step-up 재인증까지 통과해야 한다
+ * (role 변경/비밀번호 초기화와 같은 등급의 작업이다).
+ */
 adminRouter.post("/users", async (req, res) => {
   const parsed = createUserSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "입력값이 올바르지 않습니다." });
     return;
   }
-  const policyProblem = validatePasswordPolicy(parsed.data.password, { username: parsed.data.username });
+  if (parsed.data.role === "ADMIN" && !isElevated(req)) {
+    res.status(403).json({
+      error: "관리자 계정을 만들려면 보안을 위해 비밀번호를 다시 확인해 주세요.",
+      code: "STEP_UP_REQUIRED",
+    });
+    return;
+  }
+  const policyProblem = validatePasswordPolicy(parsed.data.password, {
+    username: parsed.data.username,
+    role: parsed.data.role,
+  });
   if (policyProblem) {
     res.status(400).json({ error: policyProblem });
     return;

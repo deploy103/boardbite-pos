@@ -8,8 +8,9 @@ import {
   detectDistributedAccountAttack,
   recordLoginAttempt,
 } from "../auth/loginGuard.js";
-import { buildOtpAuthUri, generateTotpSecret, verifyTotp } from "../auth/totp.js";
-import { openSecret, sealSecret } from "../auth/secretBox.js";
+import { buildOtpAuthUri, generateTotpSecret } from "../auth/totp.js";
+import { consumeTotp } from "../auth/mfa.js";
+import { sealSecret } from "../auth/secretBox.js";
 import { recordAuditLog, recordAuditLogBestEffort } from "../services/auditLog.js";
 import { changeOwnPassword, StaffAccountError } from "../services/staffAccount.js";
 import { asStaffRole } from "../types/domain.js";
@@ -36,6 +37,19 @@ const INVALID_CREDENTIALS = "아이디 또는 비밀번호가 올바르지 않�
 
 /** MFA 중간 상태가 무한정 살아있지 않도록 제한한다. */
 const PENDING_MFA_TTL_MS = 5 * 60 * 1000;
+
+/**
+ * TOTP 무차별 대입 차단(요구사항2.md §2.5.1).
+ *
+ * 6자리 코드는 오차창(±1스텝)까지 합쳐도 10^6 중 3개뿐이지만, 시도 횟수에 제한이 없으면
+ * 5분 pending 창 안에서 충분히 맞힐 수 있다. 한도를 넘으면 중간 상태를 폐기해 **비밀번호부터
+ * 다시** 입력하게 만든다 — 그러면 매 5회 시도마다 loginLimiter와 loginGuard(계정+IP backoff)를
+ * 다시 통과해야 하므로 대량 시도의 채산성이 사라진다.
+ */
+const MAX_PENDING_MFA_FAILURES = 5;
+
+/** step-up 재인증 실패 한도. 초과하면 세션 자체를 끊어 재로그인시킨다. */
+const MAX_STEP_UP_FAILURES = 5;
 
 function redirectForUser(user: { role: string; mustResetPassword: boolean; mfaEnabled: boolean }): string {
   if (user.mustResetPassword) return "/staff/change-password";
@@ -98,6 +112,7 @@ authRouter.post("/login", async (req, res) => {
       }
       req.session.pendingMfaUserId = user.id;
       req.session.pendingMfaStartedAt = Date.now();
+      req.session.pendingMfaFailures = 0;
       req.session.save((saveErr) => {
         if (saveErr) {
           res.status(500).json({ error: "로그인 처리 중 오류가 발생했습니다." });
@@ -170,16 +185,31 @@ authRouter.post("/mfa/verify", async (req, res) => {
     return;
   }
 
-  const secret = openSecret(user.mfaSecretEncrypted);
-  if (!secret || !verifyTotp(secret, parsed.data.token)) {
+  // 코드가 맞아도 이미 쓴 슬롯이면 거부된다(replay 방어).
+  if (!(await consumeTotp(user, parsed.data.token))) {
+    const failures = (req.session.pendingMfaFailures ?? 0) + 1;
+    req.session.pendingMfaFailures = failures;
+
     await recordAuditLogBestEffort({
       actorType: "STAFF",
       actorId: user.id,
       action: "AUTH_MFA_FAILED",
       targetType: "StaffUser",
       targetId: user.id,
+      metadata: { failures },
     });
-    res.status(401).json({ error: "인증번호가 올바르지 않아요." });
+
+    if (failures >= MAX_PENDING_MFA_FAILURES) {
+      // 중간 상태를 버린다 — 다음 시도는 로그인(비밀번호)부터 다시 시작해야 한다.
+      req.session.destroy(() => {
+        res.status(401).json({ error: "인증번호를 여러 번 틀렸어요. 처음부터 다시 로그인해 주세요." });
+      });
+      return;
+    }
+
+    req.session.save(() => {
+      res.status(401).json({ error: "인증번호가 올바르지 않아요." });
+    });
     return;
   }
 
@@ -294,8 +324,8 @@ authRouter.post("/mfa/enable", loadStaff, async (req, res) => {
     res.status(409).json({ error: "먼저 2단계 인증 설정을 시작해 주세요." });
     return;
   }
-  const secret = openSecret(user.mfaSecretEncrypted);
-  if (!secret || !verifyTotp(secret, parsed.data.token)) {
+  // 여기서도 consumeTotp을 써서 활성화에 쓴 코드가 곧바로 로그인에 재사용되지 않게 한다.
+  if (!(await consumeTotp(user, parsed.data.token))) {
     res.status(400).json({ error: "인증번호가 올바르지 않아요. 앱의 시간이 정확한지 확인해 주세요." });
     return;
   }
@@ -338,22 +368,40 @@ authRouter.post("/step-up", loadStaff, requireOnboardingComplete, async (req, re
   const passwordOk = await verifyPassword(parsed.data.password, user.passwordHash);
   let totpOk = true;
   if (user.mfaEnabled) {
-    const secret = user.mfaSecretEncrypted ? openSecret(user.mfaSecretEncrypted) : null;
-    totpOk = Boolean(secret && parsed.data.token && verifyTotp(secret, parsed.data.token));
+    // 비밀번호가 틀렸으면 TOTP 슬롯을 소비하지 않는다 — 틀린 비밀번호를 반복해서
+    // 정상 사용자의 다음 코드를 미리 태워버리는(선점) 짓을 막는다.
+    totpOk = Boolean(parsed.data.token) && passwordOk && (await consumeTotp(user, parsed.data.token!));
   }
 
   if (!passwordOk || !totpOk) {
+    const failures = (req.session.stepUpFailures ?? 0) + 1;
+    req.session.stepUpFailures = failures;
+
     await recordAuditLogBestEffort({
       actorType: "STAFF",
       actorId: user.id,
       action: "AUTH_STEP_UP_FAILED",
       targetType: "StaffUser",
       targetId: user.id,
+      metadata: { failures },
     });
-    res.status(401).json({ error: "인증에 실패했어요. 다시 확인해 주세요." });
+
+    // 비밀번호/TOTP를 반복해서 틀리는 세션은 탈취된 쿠키일 가능성이 높다 — 세션을 끊는다.
+    if (failures >= MAX_STEP_UP_FAILURES) {
+      req.session.destroy(() => {
+        res.clearCookie("boardbite.sid");
+        res.status(401).json({ error: "인증에 여러 번 실패했어요. 다시 로그인해 주세요." });
+      });
+      return;
+    }
+
+    req.session.save(() => {
+      res.status(401).json({ error: "인증에 실패했어요. 다시 확인해 주세요." });
+    });
     return;
   }
 
+  req.session.stepUpFailures = 0;
   req.session.elevatedUntil = Date.now() + STEP_UP_WINDOW_MS;
   req.session.save(async (err) => {
     if (err) {

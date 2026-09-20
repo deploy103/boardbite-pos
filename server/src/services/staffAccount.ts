@@ -50,7 +50,7 @@ export async function changeOwnPassword(input: ChangePasswordInput): Promise<voi
     throw new StaffAccountError("이전과 다른 비밀번호를 사용해 주세요.", 400);
   }
 
-  const problem = validatePasswordPolicy(input.newPassword, { username: user.username });
+  const problem = validatePasswordPolicy(input.newPassword, { username: user.username, role: user.role });
   if (problem) throw new StaffAccountError(problem, 400);
 
   await prisma.staffUser.update({
@@ -81,7 +81,7 @@ export async function adminResetPassword(input: {
   const target = await prisma.staffUser.findUnique({ where: { id: input.targetUserId } });
   if (!target) throw new StaffAccountError("존재하지 않는 사용자입니다.", 404);
 
-  const problem = validatePasswordPolicy(input.newPassword, { username: target.username });
+  const problem = validatePasswordPolicy(input.newPassword, { username: target.username, role: target.role });
   if (problem) throw new StaffAccountError(problem, 400);
 
   await prisma.staffUser.update({

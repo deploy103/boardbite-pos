@@ -58,21 +58,33 @@ Node.js(TypeScript) + Express + Prisma + SQLite + React(Vite) + Socket.IO.
 | `SESSION_SECRET` | 항상 | 세션 쿠키 서명 키. production은 32자 이상. 바꾸면 기존 로그인 세션이 전부 무효화된다. |
 | `AUDIT_HMAC_KEY` | production | 감사 로그 HMAC 체인 키(32자 이상). DB에 저장하지 않는다. 분실하면 기존 로그의 무결성 검증이 불가능해진다. |
 | `MFA_ENCRYPTION_KEY` | production | TOTP secret 봉인용 AES-256-GCM 키(32자 이상). 분실하면 모든 관리자가 인증 앱을 재등록해야 한다. |
-| `ADMINID` / `ADMINPASSWORD` | 항상 | 부트스트랩 관리자 계정. |
-| `FRONTID` / `FRONTPW` | 항상 | 부트스트랩 FRONT 계정. |
-| `POSID` / `POSPW` | 항상 | 부트스트랩 주방 계정. |
-| `SERVING_ID` / `SERVING_PW` | 항상 | 부트스트랩 서빙 계정. |
+| `ADMINID` / `ADMINPASSWORD` | 항상 | 부트스트랩 관리자 계정. **시드가 만드는 유일한 계정**이며, 직원 계정은 관리자 화면에서 등록한다. |
 | `DATABASE_URL` | 항상 | SQLite 경로. **반드시 `?connection_limit=1`을 포함**해야 한다 — 결제 동시성 제어의 전제다. |
 | `PORT` / `NODE_ENV` | - | 로컬 실행용. Docker에서는 compose가 덮어쓴다. |
 | `HOST_PORT` / `HOST_BIND` | - | Docker가 호스트에 노출할 포트/주소. 기본 바인딩은 `127.0.0.1`. |
 | `CUSTOMER_RATE_LIMIT_PER_MIN` | - | 손님 API의 IP당 분당 허용 횟수(기본 60). 손님들이 같은 공유기를 쓰면 올린다. |
 | `STAFF_LOGIN_RATE_LIMIT_PER_5MIN` | - | 로그인 API의 IP당 5분 허용 횟수(기본 20). |
+| `SENSITIVE_AUTH_RATE_LIMIT_PER_10MIN` | - | MFA 인증번호 확인 / step-up / 비밀번호 변경의 IP당 10분 허용 횟수(기본 40). |
+| `TRUST_PROXY` | - | X-Forwarded-For 신뢰 홉 수(기본 1 = Nginx 1대). **프록시 없이 직접 노출하면 반드시 `0`.** |
 
-### production 비밀번호/키 정책
+### 계정 모델
 
-- 부트스트랩 계정 비밀번호: **15자 이상**, `change-me` 같은 기본값 금지, 아이디와 동일 금지, **네 계정이 서로 다른 값**일 것.
+시드는 **부트스트랩 ADMIN 계정 하나만** 만듭니다. FRONT/POS/SERVING 계정은 환경변수로 만들지 않고,
+그 ADMIN으로 로그인해 **관리자 화면 > 사용자 탭에서 직접 등록**합니다. 그래야 감사 로그에
+"누가 이 계정을 만들었는지"가 남고, 주인 없는 공용 계정이 `.env`에 방치되지 않습니다.
+
+| | ADMIN | FRONT / POS / SERVING |
+| --- | --- | --- |
+| 비밀번호 최소 길이 | **15자** | **10자** |
+| 2단계 인증(TOTP) | **필수** (production에서 미설정 시 관리 기능 전부 403) | 선택 — 등록 여부는 관리자 화면 배지로 확인 |
+| 계정 생성 경로 | 시드(최초 1개) 또는 관리자 화면(step-up 재인증 필요) | 관리자 화면에서만 |
+
+### 비밀번호/키 정책
+
+- 비밀번호 최소 길이는 **모든 환경(개발/테스트/운영)에서 동일**합니다 — ADMIN 15자, 그 외 10자.
+- `change-me` 같은 기본값 금지, 아이디와 동일한 값 금지.
 - 복잡도(대문자/특수문자) 강제는 하지 않습니다. 기억하기 쉬운 긴 문장을 권장합니다.
-- 비밀 키는 32자 이상이어야 하며 `SESSION_SECRET`과 계정 비밀번호가 같으면 거부됩니다.
+- 비밀 키는 32자 이상이어야 하며 `SESSION_SECRET`과 `ADMINPASSWORD`가 같으면 거부됩니다.
 
 강한 랜덤값 생성:
 
@@ -92,9 +104,9 @@ node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"
 npm install
 
 cp .env.example .env
-# .env를 열어 계정/비밀키 값을 채운다.
+# .env를 열어 ADMIN 계정/비밀키 값을 채운다.
 
-# 최초 1회: DB 마이그레이션 + 부트스트랩 계정 시드
+# 최초 1회: DB 마이그레이션 + 부트스트랩 ADMIN 계정 시드
 npm run prisma:migrate --workspace server
 npm run prisma:seed --workspace server
 
@@ -103,9 +115,12 @@ npm run dev:server   # http://localhost:3000 — API + Socket.IO
 npm run dev:client   # http://localhost:5173 — /api, /socket.io는 3000으로 프록시
 ```
 
-`/staff/login`에서 부트스트랩 계정으로 로그인하면 서버가 역할을 판정해 `/admin`, `/front`, `/pos`, `/serving`으로 이동시킵니다.
+`/staff/login`에서 부트스트랩 ADMIN 계정으로 로그인하면 서버가 역할을 판정해 `/admin`으로 이동시킵니다.
 
-> 부트스트랩 계정은 첫 로그인에서 **비밀번호 변경 화면으로 강제 이동**합니다. 변경 전에는 업무 화면을 쓸 수 없습니다.
+> 부트스트랩 ADMIN 계정은 첫 로그인에서 **비밀번호 변경 화면으로 강제 이동**합니다. 변경 전에는 업무 화면을 쓸 수 없습니다.
+> production에서는 이어서 **2단계 인증(TOTP) 등록**까지 마쳐야 관리 기능이 열립니다.
+
+FRONT/POS/SERVING 화면을 쓰려면 먼저 `/admin` > **사용자** 탭에서 각 역할의 계정을 만드세요.
 
 손님 화면을 확인하려면 FRONT에서 테이블을 연 뒤 화면에 표시되는 **입장 코드**를 `/t/<publicSlug>`에서 입력하세요.
 
@@ -144,7 +159,7 @@ npm run test:e2e
 
 ```bash
 git clone <저장소 URL> && cd boardbite-pos
-cp .env.example .env   # 값 채우기 (계정 비밀번호 + 3개 비밀키)
+cp .env.example .env   # 값 채우기 (ADMIN 계정 비밀번호 + 3개 비밀키)
 
 # 볼륨 디렉터리 소유자를 컨테이너의 non-root 사용자(uid/gid 1000)로 맞춘다.
 mkdir -p data/db data/backups
@@ -153,7 +168,9 @@ sudo chown -R 1000:1000 data
 docker compose up -d --build
 ```
 
-빌드, DB 마이그레이션, 부트스트랩 계정 시드까지 이 한 번의 명령으로 끝납니다.
+빌드, DB 마이그레이션, 부트스트랩 ADMIN 계정 시드까지 이 한 번의 명령으로 끝납니다.
+기동 후 `/staff/login`에서 ADMIN으로 로그인 → 비밀번호 변경 → 2단계 인증 등록 →
+관리자 화면에서 직원 계정을 등록하는 순서로 진행하세요.
 
 - SQLite DB와 백업 파일은 `./data/db`, `./data/backups`에 저장되어 컨테이너를 내렸다 올려도 유지됩니다.
 - 컨테이너는 **non-root(`node`, uid 1000)** 로 실행되고, `no-new-privileges`와 전체 capability drop이 적용됩니다.
@@ -171,6 +188,14 @@ docker compose up -d --build
 아래 헤더를 전달하지 않으면 rate limit이 모든 손님을 한 사람으로 묶어 계산하거나, 로그인이 아예 되지 않습니다.
 
 ```nginx
+# WebSocket이 아닌 일반 요청까지 `Connection: upgrade`로 보내면 업스트림이 응답을
+# 끝내지 못해 504 Gateway Timeout이 난다. Upgrade 헤더가 있을 때만 upgrade로 넘기고
+# 평소에는 close가 되도록 이 map을 http {} 블록에 둔다(필수).
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
 server {
     listen 443 ssl http2;
     server_name booth.example.com;
@@ -190,7 +215,7 @@ server {
         # Socket.IO(WebSocket) upgrade — 없으면 실시간 갱신이 동작하지 않는다.
         proxy_http_version 1.1;
         proxy_set_header Upgrade    $http_upgrade;
-        proxy_set_header Connection "upgrade";
+        proxy_set_header Connection $connection_upgrade;
         proxy_read_timeout 600s;
     }
 }
@@ -216,10 +241,14 @@ server {
 인증 앱을 분실하면 **다른 ADMIN 계정**이 사용자 관리 화면에서 `MFA 해제`를 실행해야 합니다(step-up 필요).
 그래서 **관리자 계정은 최소 2개 이상 만들어 두는 것을 강력히 권장**합니다.
 
-### 개인 계정 사용 권장
+### 직원 계정 등록
 
-부트스트랩 `front/pos/serving` 계정은 초기 셋업용입니다. 행사 전에 담당자별 개인 계정을 만들고
-부트스트랩 계정은 비활성화하세요. 감사 로그에 "누가" 했는지가 남아야 사고 원인을 추적할 수 있습니다.
+FRONT/POS/SERVING 계정은 관리자 화면 > **사용자** 탭에서만 만들 수 있습니다(비밀번호 10자 이상).
+공용 계정 하나를 돌려쓰지 말고 **담당자별 개인 계정**을 만드세요 — 감사 로그에 "누가" 했는지가
+남아야 사고 원인을 추적할 수 있습니다. 직원 계정의 2단계 인증은 선택이며, 등록 여부는
+같은 화면의 `MFA 사용` / `MFA 없음` 배지로 확인합니다.
+
+ADMIN 역할 계정을 추가로 만들 때는 권한 상승에 해당하므로 **step-up 재인증**(비밀번호 + TOTP)이 한 번 더 필요합니다.
 
 ### 손님 입장 코드 운영
 
@@ -277,14 +306,15 @@ docker compose up -d
 
 ## 배포 전 체크리스트
 
-- [ ] 모든 부트스트랩 계정 비밀번호를 15자 이상 고유한 값으로 변경
+- [ ] 부트스트랩 ADMIN 비밀번호를 15자 이상 값으로 변경
 - [ ] `SESSION_SECRET` 강한 랜덤값(32자 이상)
 - [ ] `AUDIT_HMAC_KEY` 강한 랜덤값(32자 이상) — 안전한 곳에 별도 보관
 - [ ] `MFA_ENCRYPTION_KEY` 강한 랜덤값(32자 이상) — 안전한 곳에 별도 보관
 - [ ] ADMIN 계정 2개 이상 생성 + 각각 MFA 설정 완료
-- [ ] 담당자별 개인 계정 생성, 부트스트랩 `front/pos/serving` 계정 비활성화
+- [ ] 관리자 화면에서 담당자별 FRONT/POS/SERVING 계정 생성(10자 이상)
 - [ ] HTTPS 인증서 적용 및 `https://`로 접속 확인
 - [ ] 외부에서 `<서버IP>:3000` 직접 접근이 차단되는지 확인
+- [ ] 앞단 Nginx 없이 직접 노출하는 구성이라면 `TRUST_PROXY=0` 설정 (IP 기반 제한 우회 방지)
 - [ ] `/healthz`, `/readyz` 모두 200 확인
 - [ ] 백업 생성 테스트 + 복원 테스트(실제로 복원까지 해볼 것)
 - [ ] 테이블별 NFC/QR이 올바른 `/t/<slug>`를 가리키는지 전수 확인
@@ -300,7 +330,9 @@ docker compose up -d
 
 ## 기본 계정 (부트스트랩)
 
-`.env.example` 참고. 첫 로그인 시 비밀번호 변경이 강제되며, 행사 전에 개인 계정으로 전환하는 것을 권장합니다.
+시드는 `.env`의 `ADMINID` / `ADMINPASSWORD`로 **ADMIN 계정 하나만** 만듭니다(`.env.example` 참고).
+첫 로그인 시 비밀번호 변경이 강제되고, production에서는 2단계 인증 등록까지 마쳐야 관리 기능이 열립니다.
+나머지 직원 계정은 그 뒤 관리자 화면에서 등록합니다.
 
 ## 라이선스
 

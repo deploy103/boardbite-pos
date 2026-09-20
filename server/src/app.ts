@@ -22,7 +22,19 @@ const clientDist = path.resolve(__dirname, "../../client/dist");
 
 export function createApp() {
   const app = express();
-  app.set("trust proxy", 1);
+
+  /**
+   * X-Forwarded-For를 어디까지 신뢰할지(요구사항2.md §7.1).
+   *
+   * 이 값이 중요한 이유: rate limiter와 loginGuard가 전부 `req.ip`를 키로 쓴다. 프록시가 없는데도
+   * XFF를 신뢰하면, 공격자가 헤더를 매 요청 다르게 위조하는 것만으로 로그인 제한과 입장 코드
+   * 무차별 대입 제한을 통째로 우회할 수 있다.
+   *
+   * 기본값 1은 README의 표준 배포 구성(같은 호스트의 Nginx가 HTTPS를 종단하고 127.0.0.1:3000으로
+   * proxy_pass)을 전제한다. 프록시 없이 앱을 직접 노출한다면(HOST_BIND=0.0.0.0) 반드시
+   * `TRUST_PROXY=0`으로 두어 소켓 주소만 쓰게 해야 한다.
+   */
+  app.set("trust proxy", env.TRUST_PROXY);
 
   app.use(
     helmet({
@@ -114,7 +126,35 @@ export function createApp() {
     message: { error: "입장 코드 시도가 너무 많아요. 잠시 후 다시 시도해 주세요." },
   });
 
+  /**
+   * 2단계 인증·재인증 계열 엔드포인트 보호(요구사항2.md §2.5).
+   *
+   * loginLimiter는 `/api/staff/login`에만 걸리므로, 비밀번호를 이미 손에 넣은 공격자는
+   * TOTP 6자리(10^6, 허용 오차창 포함 3개)를 제한 없이 시도할 수 있었다. 5분짜리 pending
+   * 창 안에서 초당 수백 번을 던지면 2단계 인증이 사실상 무력화된다.
+   *
+   * 실질적인 차단은 auth.routes.ts의 세션 단위 실패 카운터(한도 초과 시 pending/세션 폐기)가
+   * 담당하고, 이 limiter는 그 앞단에서 대량 트래픽 자체를 끊는 역할이다. 직원 단말이 모두
+   * 같은 공유기를 쓰는 환경을 감안해 정상 사용은 걸리지 않을 만큼 여유를 둔다.
+   */
+  const sensitiveAuthLimiter = rateLimit({
+    windowMs: 10 * 60 * 1000,
+    limit: env.SENSITIVE_AUTH_RATE_LIMIT_PER_10MIN,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "인증 시도가 너무 많아요. 잠시 후 다시 시도해 주세요." },
+  });
+
   app.use("/api/staff/login", loginLimiter);
+  for (const path of [
+    "/api/staff/mfa/verify",
+    "/api/staff/mfa/setup",
+    "/api/staff/mfa/enable",
+    "/api/staff/step-up",
+    "/api/staff/change-password",
+  ]) {
+    app.use(path, sensitiveAuthLimiter);
+  }
   app.use("/api/customer", customerLimiter);
   app.post("/api/customer/join/:slug", joinLimiter);
 

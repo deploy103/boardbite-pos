@@ -13,8 +13,15 @@ declare module "express-session" {
     /** ID/PW는 통과했지만 아직 TOTP를 넘지 않은 중간 상태(요구사항2.md §2.5.1). */
     pendingMfaUserId?: string;
     pendingMfaStartedAt?: number;
+    /**
+     * 이 pending 상태에서 TOTP를 틀린 횟수. 한도를 넘으면 pending을 폐기해
+     * 비밀번호부터 다시 입력하게 만든다 — TOTP 6자리 무차별 대입 차단.
+     */
+    pendingMfaFailures?: number;
     /** step-up 재인증 만료 시각(epoch ms). 요구사항2.md §2.5.2 — 5분. */
     elevatedUntil?: number;
+    /** step-up 재인증 실패 횟수. 한도를 넘으면 세션 자체를 끊는다. */
+    stepUpFailures?: number;
   }
 }
 

@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
 import { z } from "zod";
+import { isForbiddenValue, validatePasswordPolicy } from "./auth/passwordPolicy.js";
 
 // 모노레포 루트의 .env 하나만 사용한다(server/dist, server/src 어디서 실행되든 동일 경로로 해석됨).
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -33,19 +34,46 @@ const envSchema = z.object({
    */
   STAFF_LOGIN_RATE_LIMIT_PER_5MIN: z.coerce.number().int().min(5).default(20),
 
+  /**
+   * Express `trust proxy` 설정값. rate limiter와 loginGuard가 쓰는 `req.ip`를 결정한다.
+   *
+   * 기본값 1 = "앞단 프록시 1대를 신뢰"(README의 Nginx 배포 구성).
+   * 프록시 없이 직접 노출하는 경우 반드시 0으로 둔다 — 그러지 않으면 클라이언트가 보낸
+   * X-Forwarded-For가 그대로 req.ip가 되어 IP 기반 제한이 전부 무력화된다.
+   */
+  TRUST_PROXY: z.coerce.number().int().min(0).max(10).default(1),
+
+  /**
+   * MFA 인증번호 확인 / step-up 재인증 / 비밀번호 변경의 IP당 10분 허용 횟수.
+   * 정상 운영에서는 닿을 일이 없는 값이지만, 직원 단말이 전부 같은 공유기를 쓰는 환경이라면
+   * 올릴 수 있게 열어둔다. 실제 무차별 대입 차단은 이 값과 무관하게 세션 단위 실패 카운터
+   * (auth.routes.ts)가 담당하므로, 올려도 방어력이 사라지지 않는다.
+   */
+  SENSITIVE_AUTH_RATE_LIMIT_PER_10MIN: z.coerce.number().int().min(5).default(40),
+
+  /**
+   * 부트스트랩 관리자 계정. 시드가 만드는 유일한 계정이며, FRONT/POS/SERVING 계정은
+   * 환경변수로 만들지 않는다 — 운영자가 로그인한 뒤 관리자 화면에서 직접 등록한다.
+   * 그래야 감사 로그에 "누가 만든 계정인지"가 남고, 아무도 안 쓰는 공용 계정이 방치되지 않는다.
+   */
   ADMINID: z.string().min(1),
   ADMINPASSWORD: z.string().min(1),
-  FRONTID: z.string().min(1),
-  FRONTPW: z.string().min(1),
-  POSID: z.string().min(1),
-  POSPW: z.string().min(1),
-  SERVING_ID: z.string().min(1),
-  SERVING_PW: z.string().min(1),
 });
 
 export const env = envSchema.parse(process.env);
 
 export const isProduction = env.NODE_ENV === "production";
+
+// 비밀번호 정책은 auth/passwordPolicy.ts가 단일 출처다. 기존 호출부(admin.routes.ts,
+// services/staffAccount.ts)가 계속 "../env.js"에서 가져다 쓸 수 있도록 여기서 재수출한다.
+export {
+  validatePasswordPolicy,
+  minPasswordLength,
+  MIN_ADMIN_PASSWORD_LENGTH,
+  MIN_STAFF_PASSWORD_LENGTH,
+  MAX_PASSWORD_LENGTH,
+} from "./auth/passwordPolicy.js";
+export type { PasswordPolicyContext } from "./auth/passwordPolicy.js";
 
 // ---------------------------------------------------------------------------
 // production 기동 전 필수 검증 (요구사항2.md §7.3)
@@ -54,57 +82,7 @@ export const isProduction = env.NODE_ENV === "production";
 // 왜 부적합한지만 알려준다.
 // ---------------------------------------------------------------------------
 
-/** `change-me` 류의 대표적인 placeholder / 취약한 기본값. */
-const FORBIDDEN_VALUES = new Set([
-  "change-me",
-  "changeme",
-  "change_me",
-  "password",
-  "admin",
-  "secret",
-  "test",
-  "1234",
-  "12345678",
-  "boardbite",
-]);
-
-export const MIN_PRODUCTION_PASSWORD_LENGTH = 15;
-export const MAX_PASSWORD_LENGTH = 200;
 const MIN_PRODUCTION_SECRET_LENGTH = 32;
-
-function isForbiddenValue(value: string): boolean {
-  return FORBIDDEN_VALUES.has(value.trim().toLowerCase());
-}
-
-export interface PasswordPolicyContext {
-  username?: string;
-  /** production 정책을 강제할지 여부. 기본값은 현재 NODE_ENV. */
-  production?: boolean;
-}
-
-/**
- * 비밀번호 정책(요구사항2.md §2.4). production은 15자 이상을 요구하고,
- * 개발/테스트 환경은 기존 8자 기준을 유지해 로컬 셋업 편의를 해치지 않는다.
- * 복잡도(대문자/특수문자) 강제는 하지 않는다 — 길이와 "뻔한 값 금지"가 실제 방어력이 높다.
- */
-export function validatePasswordPolicy(password: string, ctx: PasswordPolicyContext = {}): string | null {
-  const production = ctx.production ?? isProduction;
-  const minLength = production ? MIN_PRODUCTION_PASSWORD_LENGTH : 8;
-
-  if (password.length < minLength) {
-    return `비밀번호는 최소 ${minLength}자 이상이어야 합니다.`;
-  }
-  if (password.length > MAX_PASSWORD_LENGTH) {
-    return `비밀번호는 최대 ${MAX_PASSWORD_LENGTH}자까지 사용할 수 있습니다.`;
-  }
-  if (isForbiddenValue(password)) {
-    return "너무 흔하거나 기본값인 비밀번호는 사용할 수 없습니다.";
-  }
-  if (ctx.username && password.trim().toLowerCase() === ctx.username.trim().toLowerCase()) {
-    return "아이디와 같은 비밀번호는 사용할 수 없습니다.";
-  }
-  return null;
-}
 
 function assertStrongSecret(name: string, value: string | undefined, errors: string[]) {
   if (!value || value.trim().length === 0) {
@@ -123,6 +101,9 @@ function assertStrongSecret(name: string, value: string | undefined, errors: str
 /**
  * production 기동 시 1회 호출한다. 문제가 있으면 서버를 띄우지 않고 종료시킨다.
  * 개발/테스트에서는 아무 것도 하지 않는다.
+ *
+ * 검사 대상 계정은 ADMINID/ADMINPASSWORD 하나뿐이다 — 나머지 직원 계정은 환경변수가 아니라
+ * 관리자 화면에서 만들어지고, 그때 같은 비밀번호 정책이 API 레벨에서 적용된다.
  */
 export function assertProductionEnv(): void {
   if (!isProduction) return;
@@ -133,24 +114,10 @@ export function assertProductionEnv(): void {
   assertStrongSecret("AUDIT_HMAC_KEY", env.AUDIT_HMAC_KEY, errors);
   assertStrongSecret("MFA_ENCRYPTION_KEY", env.MFA_ENCRYPTION_KEY, errors);
 
-  const accounts: { envName: string; username: string; password: string }[] = [
-    { envName: "ADMINPASSWORD", username: env.ADMINID, password: env.ADMINPASSWORD },
-    { envName: "FRONTPW", username: env.FRONTID, password: env.FRONTPW },
-    { envName: "POSPW", username: env.POSID, password: env.POSPW },
-    { envName: "SERVING_PW", username: env.SERVING_ID, password: env.SERVING_PW },
-  ];
-
-  for (const account of accounts) {
-    const problem = validatePasswordPolicy(account.password, { username: account.username, production: true });
-    if (problem) errors.push(`${account.envName}: ${problem}`);
-    if (account.password === env.SESSION_SECRET) {
-      errors.push(`${account.envName}를 SESSION_SECRET과 같은 값으로 쓸 수 없습니다.`);
-    }
-  }
-
-  const distinctPasswords = new Set(accounts.map((a) => a.password));
-  if (distinctPasswords.size !== accounts.length) {
-    errors.push("부트스트랩 계정들이 같은 비밀번호를 재사용하고 있습니다. 역할별로 서로 다른 값을 사용하세요.");
+  const problem = validatePasswordPolicy(env.ADMINPASSWORD, { username: env.ADMINID, role: "ADMIN" });
+  if (problem) errors.push(`ADMINPASSWORD: ${problem}`);
+  if (env.ADMINPASSWORD === env.SESSION_SECRET) {
+    errors.push("ADMINPASSWORD를 SESSION_SECRET과 같은 값으로 쓸 수 없습니다.");
   }
 
   if (errors.length > 0) {

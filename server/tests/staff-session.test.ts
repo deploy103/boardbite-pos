@@ -165,8 +165,18 @@ describe("TOTP MFA", () => {
       .send({ token: generateTotp(setup.body.secret) });
     expect(enable.status).toBe(200);
 
+    // 활성화도 TOTP 1회 소비다(재사용 방어). 그 부수효과가 이어지는 검증을 가리지 않도록
+    // 여기서 초기화한다 — 재사용 방어 자체는 아래 전용 테스트가 직접 확인한다.
+    await prisma.staffUser.update({ where: { username }, data: { mfaLastUsedCounter: null } });
+
     return { username, password, secret: setup.body.secret as string };
   }
+
+  /**
+   * 같은 30초 슬롯의 코드는 한 번만 통하므로, 한 테스트에서 연속으로 인증해야 할 때는
+   * 다음 슬롯(+30초)의 코드를 쓴다. 검증 허용 범위가 ±1스텝이라 이 코드도 정상 통과한다.
+   */
+  const nextSlotTotp = (secret: string) => generateTotp(secret, Date.now() + 30_000);
 
   it("secret은 평문으로 저장되지 않는다", async () => {
     const { username, secret } = await enrollMfa();
@@ -209,6 +219,59 @@ describe("TOTP MFA", () => {
     expect((await agent.get("/api/staff/admin/users")).status).toBe(200);
   });
 
+  /**
+   * TOTP는 30초 슬롯마다 같은 6자리가 유효하고 시계 오차 보정으로 앞뒤 1스텝까지 받아주므로,
+   * 한 번 노출된 코드가 최대 90초 동안 계속 통한다. 소비한 슬롯을 기록해 재생을 막는다.
+   */
+  it("한 번 쓴 TOTP 코드는 다시 사용할 수 없다", async () => {
+    const { username, password, secret } = await enrollMfa();
+    const token = generateTotp(secret);
+
+    const first = request.agent(app);
+    await first.post("/api/staff/login").set("X-BoardBite-Client", "1").send({ username, password });
+    expect((await first.post("/api/staff/mfa/verify").set("X-BoardBite-Client", "1").send({ token })).status).toBe(200);
+
+    // 같은 코드를 가로챈 공격자가 그대로 재생해도 통하지 않아야 한다.
+    const replay = request.agent(app);
+    await replay.post("/api/staff/login").set("X-BoardBite-Client", "1").send({ username, password });
+    const res = await replay.post("/api/staff/mfa/verify").set("X-BoardBite-Client", "1").send({ token });
+    expect(res.status).toBe(401);
+    expect((await replay.get("/api/staff/admin/users")).status).toBe(401);
+  });
+
+  /**
+   * 핵심 방어선: 시도 횟수에 제한이 없으면 5분 pending 창 안에서 6자리를 맞힐 수 있다.
+   * 한도를 넘으면 중간 상태를 폐기해 비밀번호부터 다시 받게 한다.
+   */
+  it("TOTP를 5회 틀리면 pending 상태가 폐기되어 다시 로그인해야 한다", async () => {
+    const { username, password, secret } = await enrollMfa();
+
+    const agent = request.agent(app);
+    await agent.post("/api/staff/login").set("X-BoardBite-Client", "1").send({ username, password });
+
+    for (let i = 0; i < 5; i += 1) {
+      const res = await agent.post("/api/staff/mfa/verify").set("X-BoardBite-Client", "1").send({ token: "000000" });
+      expect(res.status).toBe(401);
+    }
+
+    // 이제는 올바른 코드를 보내도 pending이 없어 통하지 않는다.
+    const correct = await agent
+      .post("/api/staff/mfa/verify")
+      .set("X-BoardBite-Client", "1")
+      .send({ token: generateTotp(secret) });
+    expect(correct.status).toBe(401);
+    expect((await agent.get("/api/staff/admin/users")).status).toBe(401);
+
+    // 비밀번호부터 다시 시작하면 정상적으로 들어갈 수 있다.
+    const retry = request.agent(app);
+    await retry.post("/api/staff/login").set("X-BoardBite-Client", "1").send({ username, password });
+    const ok = await retry
+      .post("/api/staff/mfa/verify")
+      .set("X-BoardBite-Client", "1")
+      .send({ token: generateTotp(secret) });
+    expect(ok.status).toBe(200);
+  });
+
   it("MFA 계정의 step-up은 비밀번호만으로는 통과하지 못한다", async () => {
     const { username, password, secret } = await enrollMfa();
     const agent = request.agent(app);
@@ -221,7 +284,7 @@ describe("TOTP MFA", () => {
     const withTotp = await agent
       .post("/api/staff/step-up")
       .set("X-BoardBite-Client", "1")
-      .send({ password, token: generateTotp(secret) });
+      .send({ password, token: nextSlotTotp(secret) });
     expect(withTotp.status).toBe(200);
   });
 });
@@ -233,6 +296,22 @@ describe("step-up 재인증", () => {
     const res = await agent.post("/api/staff/step-up").set("X-BoardBite-Client", "1").send({ password: "wrong" });
     expect(res.status).toBe(401);
     expect((await agent.get("/api/staff/me")).body.elevated).toBe(false);
+  });
+
+  /** 반복 실패하는 세션은 탈취된 쿠키일 가능성이 높다 — 세션 자체를 끊는다. */
+  it("step-up을 5회 실패하면 세션이 끊겨 재로그인해야 한다", async () => {
+    const { username, password } = await createStaff("ADMIN");
+    const agent = await loginAgent(username, password);
+    expect((await agent.get("/api/staff/me")).status).toBe(200);
+
+    for (let i = 0; i < 5; i += 1) {
+      const res = await agent.post("/api/staff/step-up").set("X-BoardBite-Client", "1").send({ password: "wrong" });
+      expect(res.status).toBe(401);
+    }
+
+    // 세션이 폐기되어 인증이 필요한 API 전부가 401이 된다.
+    expect((await agent.get("/api/staff/me")).status).toBe(401);
+    expect((await agent.get("/api/staff/admin/users")).status).toBe(401);
   });
 
   it("승격 후 5분이 지나면 자동으로 만료된다", async () => {

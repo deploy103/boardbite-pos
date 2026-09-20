@@ -72,31 +72,45 @@ export function generateTotp(base32Secret: string, atMs: number = Date.now()): s
 }
 
 /**
- * 6자리 코드를 검증한다. 기기 시계 오차를 감안해 앞뒤 1스텝(±30초)까지 허용한다.
+ * 6자리 코드를 검증하고, 맞으면 그 코드가 속한 **counter(30초 슬롯 번호)** 를 돌려준다.
+ * 틀리면 null. 기기 시계 오차를 감안해 앞뒤 1스텝(±30초)까지 허용한다.
  * 코드 비교는 타이밍 공격을 피하기 위해 timingSafeEqual을 사용한다.
+ *
+ * counter를 노출하는 이유는 재사용(replay) 방어 때문이다 — 호출부가 이 값을 계정에 기록해두고
+ * "이미 쓴 슬롯 이하"는 거부하면, 한 번 노출된 코드가 남은 유효시간 동안 다시 통하지 않는다.
  */
-export function verifyTotp(base32Secret: string, token: string, atMs: number = Date.now(), window = 1): boolean {
+export function verifyTotpCounter(
+  base32Secret: string,
+  token: string,
+  atMs: number = Date.now(),
+  window = 1,
+): number | null {
   const normalized = token.replace(/\s+/g, "");
-  if (!/^\d{6}$/.test(normalized)) return false;
+  if (!/^\d{6}$/.test(normalized)) return null;
 
   let secret: Buffer;
   try {
     secret = base32Decode(base32Secret);
   } catch {
-    return false;
+    return null;
   }
 
   const counter = Math.floor(atMs / 1000 / PERIOD_SECONDS);
   const candidate = Buffer.from(normalized, "utf8");
-  let matched = false;
+  let matchedCounter: number | null = null;
   for (let drift = -window; drift <= window; drift += 1) {
     const expected = Buffer.from(hotp(secret, counter + drift), "utf8");
     // 일치하더라도 루프를 계속 돌아 비교 횟수를 일정하게 유지한다.
     if (expected.length === candidate.length && timingSafeEqual(expected, candidate)) {
-      matched = true;
+      matchedCounter = counter + drift;
     }
   }
-  return matched;
+  return matchedCounter;
+}
+
+/** 재사용 방어가 필요 없는 곳(설정 직후 1회 확인 등)을 위한 불리언 래퍼. */
+export function verifyTotp(base32Secret: string, token: string, atMs: number = Date.now(), window = 1): boolean {
+  return verifyTotpCounter(base32Secret, token, atMs, window) !== null;
 }
 
 /** 인증 앱(Google Authenticator 등)이 읽는 otpauth:// URI. secret은 로그에 남기지 않는다. */

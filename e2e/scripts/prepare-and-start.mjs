@@ -27,15 +27,11 @@ const env = {
   SESSION_SECRET: "e2e-test-session-secret-not-for-prod",
   ADMINID: "admin",
   ADMINPASSWORD: "e2e-admin-pw-12345678",
-  FRONTID: "front",
-  FRONTPW: "e2e-front-pw-12345678",
-  POSID: "pos",
-  POSPW: "e2e-pos-pw-12345678",
-  SERVING_ID: "serving",
-  SERVING_PW: "e2e-serving-pw-12345678",
+  // 직원 계정은 시드되지 않는다 — global-setup이 ADMIN으로 로그인해 관리자 API로 만든다.
   // E2E 한 번 실행에서 역할별 로그인이 수십 번 일어난다. IP 단위 1차 제한은 풀어두고,
   // 실제 brute force 방어(loginGuard)는 server/tests/login-guard.test.ts에서 검증한다.
   STAFF_LOGIN_RATE_LIMIT_PER_5MIN: "100000",
+  SENSITIVE_AUTH_RATE_LIMIT_PER_10MIN: "100000",
   CUSTOMER_RATE_LIMIT_PER_MIN: "100000",
   // production과 동일한 코드 경로를 타도록 보안 키를 명시한다(없으면 SESSION_SECRET에서 파생).
   AUDIT_HMAC_KEY: "e2e-audit-hmac-key-not-for-prod-0123456789",
@@ -48,7 +44,7 @@ execSync("npm run build --workspace client", { cwd: repoRoot, stdio: "inherit", 
 console.log("[e2e] migrating e2e database...");
 execSync("npx prisma migrate deploy", { cwd: serverDir, stdio: "inherit", env });
 
-console.log("[e2e] seeding bootstrap accounts/settings...");
+console.log("[e2e] seeding bootstrap admin/settings...");
 execSync("npx tsx prisma/seed.ts", { cwd: serverDir, stdio: "inherit", env });
 
 console.log("[e2e] starting server on :4173...");

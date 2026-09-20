@@ -44,3 +44,15 @@ export function useStepUpGuard() {
 
   return { pending, setPending, guard };
 }
+
+/**
+ * 역할별 비밀번호 최소 길이 — 입력 전에 안내하기 위한 값이다.
+ * 실제 강제는 서버(server/src/auth/passwordPolicy.ts)가 하며 그쪽이 단일 출처다.
+ * ADMIN이 더 긴 이유: 관리자 계정은 모든 운영 기능과 사용자 관리 권한을 함께 쥐고 있다.
+ */
+export const MIN_ADMIN_PASSWORD_LENGTH = 15;
+export const MIN_STAFF_PASSWORD_LENGTH = 10;
+
+export function minPasswordLength(role: string | undefined): number {
+  return role === "ADMIN" ? MIN_ADMIN_PASSWORD_LENGTH : MIN_STAFF_PASSWORD_LENGTH;
+}
