@@ -25,6 +25,15 @@ function freshIp() {
   return `203.0.113.${ipCounter % 250}`;
 }
 
+/**
+ * 이 파일의 임계값 테스트 두 개는 설계상 느리다 — 기본 15초(vitest.config.ts)로는 부족하다.
+ *  - bcrypt cost 12 연산을 수십 번 수행한다(계정 생성 + 로그인 검증).
+ *  - loginGuard의 지수 backoff가 의도적으로 최대 4초까지 응답을 지연시킨다.
+ * 느린 CI 러너에서 경계에 걸려 흔들리므로 이 두 테스트에만 넉넉한 타임아웃을 준다.
+ * (임계값 자체를 낮추면 검증하려는 방어 동작이 달라지므로 그렇게 하지 않는다.)
+ */
+const SLOW_BRUTE_FORCE_TIMEOUT_MS = 90_000;
+
 describe("로그인 brute force 방어", () => {
   it("공격자 IP는 (계정+IP) 임계값에서 차단되지만, 같은 계정은 다른 IP에서 정상 로그인된다", async () => {
     const { username, password } = await createStaff("FRONT");
@@ -44,7 +53,7 @@ describe("로그인 brute force 방어", () => {
     // (이전 정책의 "username 5회 실패 → 전면 하드 락" DoS가 제거되었다는 뜻이다.)
     const allowed = await loginFrom(staffIp, username, password);
     expect(allowed.status).toBe(200);
-  });
+  }, SLOW_BRUTE_FORCE_TIMEOUT_MS);
 
   it("한 IP가 여러 계정을 훑으면 IP 단위 임계값에서 차단된다", async () => {
     const scannerIp = freshIp();
@@ -65,7 +74,7 @@ describe("로그인 brute force 방어", () => {
     expect(allowed.status).toBe(200);
 
     await prisma.loginAttempt.deleteMany({ where: { ip: scannerIp } });
-  });
+  }, SLOW_BRUTE_FORCE_TIMEOUT_MS);
 
   it("로그인 성공 시 그 (계정, IP)의 실패 기록이 초기화되어 backoff가 풀린다", async () => {
     const { username, password } = await createStaff("FRONT");
