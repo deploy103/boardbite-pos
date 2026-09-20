@@ -33,6 +33,9 @@ model StaffUser {
   // ADMIN TOTP MFA — secret은 절대 평문으로 저장하지 않고 AES-256-GCM으로 봉인해 보관한다.
   mfaEnabled         Boolean @default(false)
   mfaSecretEncrypted String?
+  // 마지막으로 성공 처리한 TOTP 슬롯 번호(30초 단위 counter). 같은 슬롯 이하의 코드는
+  // 다시 받아주지 않는다 — 한 번 노출된 6자리가 남은 유효시간(최대 90초) 동안 재사용되는 것을 막는다.
+  mfaLastUsedCounter Int?
 
   openedTableSessions TableSession[]      @relation("OpenedBy")
   payments            Payment[]

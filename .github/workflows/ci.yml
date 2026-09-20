@@ -30,12 +30,6 @@ jobs:
       SESSION_SECRET: ci-test-session-secret-not-for-prod
       ADMINID: admin
       ADMINPASSWORD: ci-test-admin-pw-12345678
-      FRONTID: front
-      FRONTPW: ci-test-front-pw-12345678
-      POSID: pos
-      POSPW: ci-test-pos-pw-12345678
-      SERVING_ID: serving
-      SERVING_PW: ci-test-serving-pw-12345678
       DATABASE_URL: "file:./dev.db"
       # NODE_ENV=test에서는 이 값들이 SESSION_SECRET에서 파생되지만,
       # 실제 운영과 동일한 코드 경로를 타도록 CI에서도 명시적으로 넣어준다.

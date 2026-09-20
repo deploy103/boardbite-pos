@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
 import { PrismaClient } from "@prisma/client";
 import { randomBytes } from "node:crypto";
+import { generateJoinCode, hashJoinCode } from "../src/services/customerSession.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.resolve(__dirname, "../../.env") });
@@ -14,7 +15,16 @@ function slug() {
 }
 
 async function main() {
-  const front = await prisma.staffUser.findUniqueOrThrow({ where: { username: process.env.FRONTID! } });
+  // 데모 테이블 세션을 "연 사람"으로 기록할 계정. FRONT 계정은 환경변수로 시드되지 않고
+  // 관리자 화면에서 만들어지므로, 이미 만들어져 있는 계정 중에서 고른다(없으면 ADMIN).
+  const front =
+    (await prisma.staffUser.findFirst({ where: { role: "FRONT", isActive: true }, orderBy: { createdAt: "asc" } })) ??
+    (await prisma.staffUser.findFirst({ where: { role: "ADMIN", isActive: true }, orderBy: { createdAt: "asc" } }));
+  if (!front) {
+    throw new Error(
+      "데모 데이터를 넣으려면 직원 계정이 최소 1개 필요합니다. 먼저 `npm run prisma:seed`로 ADMIN을 만드세요.",
+    );
+  }
 
   // ---- 메뉴 ----
   const udon = await prisma.menuCategory.create({ data: { name: "우동", sortOrder: 0 } });
@@ -69,8 +79,15 @@ async function main() {
 
   // table2는 이미 손님이 이용 중인 상태로 시작 (주문까지 생성)
   await prisma.table.update({ where: { id: table2.id }, data: { status: "OPEN" } });
+  // 하드닝 이후 TableSession에는 `token` 컬럼이 없다 — 접근 권한은 세션마다 새로 발급되는
+  // 6자리 입장 코드가 쥐고 있고, DB에는 그 HMAC만 저장된다(요구사항2.md §2.2).
+  const demoJoinCode = generateJoinCode();
   const session2 = await prisma.tableSession.create({
-    data: { tableId: table2.id, token: slug(), guestCount: 3, openedById: front.id },
+    data: { tableId: table2.id, guestCount: 3, openedById: front.id },
+  });
+  await prisma.tableSession.update({
+    where: { id: session2.id },
+    data: { joinCodeHash: hashJoinCode(session2.id, demoJoinCode), joinCodeIssuedAt: new Date() },
   });
   await prisma.tableGameUsage.create({
     data: {
@@ -95,6 +112,7 @@ async function main() {
 
   console.log("[demo] table1(빈자리) slug:", table1.publicSlug);
   console.log("[demo] table2(이용중) slug:", table2.publicSlug);
+  console.log("[demo] table2 입장 코드:", demoJoinCode, "(평문은 DB에 저장되지 않으므로 여기서만 확인 가능)");
   console.log("[demo] table3(비활성)");
 }
 

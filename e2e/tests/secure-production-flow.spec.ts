@@ -8,16 +8,13 @@ import { test, expect, request as pwRequest } from "@playwright/test";
  *   1) 세션/손님 쿠키에 Secure 속성이 붙고도 로그인·입장이 정상 동작하는가
  *   2) production 기동 검증(assertProductionEnv)을 통과한 서버에서 주문~정산이 끝까지 도는가
  *   3) ADMIN은 MFA를 설정하기 전까지 관리 기능을 쓸 수 없는가
+ *   4) 직원 계정이 "ADMIN 화면에서만" 만들어지는 경로가 production에서도 성립하는가
  *
- * 부트스트랩 계정은 production 비밀번호 정책(15자 이상)을 따른다.
+ * 시드가 만드는 계정은 부트스트랩 ADMIN 하나뿐이다. ADMIN 비밀번호는 production 정책(15자 이상)을
+ * 따르고, FRONT/POS/SERVING 계정은 ADMIN이 MFA까지 마친 뒤 관리자 API로 직접 등록한다.
  */
 
-const INITIAL = {
-  admin: "e2e-secure-admin-initial-pw-01",
-  front: "e2e-secure-front-initial-pw-02",
-  pos: "e2e-secure-pos-initial-pw-03",
-  serving: "e2e-secure-serving-initial-pw-04",
-} as const;
+const INITIAL_ADMIN_PASSWORD = "e2e-secure-admin-initial-pw-01";
 
 const OPERATIONAL = {
   admin: "e2e-secure-admin-operational-2026",
@@ -26,20 +23,26 @@ const OPERATIONAL = {
   serving: "e2e-secure-serving-operational-2026",
 } as const;
 
-/** 첫 로그인 → 강제 비밀번호 변경까지 마친 API 컨텍스트를 돌려준다. */
-async function onboard(baseURL: string | undefined, role: keyof typeof INITIAL) {
-  const api = await pwRequest.newContext({
+/** ADMIN이 만들어야 하는 직원 계정(아이디 = 키, 역할 = 값). */
+const STAFF_ROLES = {
+  front: "FRONT",
+  pos: "POS",
+  serving: "SERVING",
+} as const;
+
+function secureContext(baseURL: string | undefined) {
+  return pwRequest.newContext({
     baseURL,
     ignoreHTTPSErrors: true,
     extraHTTPHeaders: { "X-BoardBite-Client": "1" },
   });
-  const login = await api.post("/api/staff/login", { data: { username: role, password: INITIAL[role] } });
-  expect(login.ok(), `${role} 초기 로그인 실패`).toBeTruthy();
+}
 
-  const changed = await api.post("/api/staff/change-password", {
-    data: { currentPassword: INITIAL[role], newPassword: OPERATIONAL[role] },
-  });
-  expect(changed.ok(), `${role} 비밀번호 변경 실패: ${await changed.text()}`).toBeTruthy();
+/** ADMIN이 등록해 둔 직원 계정으로 로그인한 API 컨텍스트를 돌려준다. */
+async function loginAs(baseURL: string | undefined, who: keyof typeof STAFF_ROLES) {
+  const api = await secureContext(baseURL);
+  const res = await api.post("/api/staff/login", { data: { username: who, password: OPERATIONAL[who] } });
+  expect(res.ok(), `${who} 로그인 실패: ${res.status()}`).toBeTruthy();
   return api;
 }
 
@@ -47,13 +50,10 @@ test("production 조건(HTTPS + Secure 쿠키)에서 주문→조리→서빙→
   test.setTimeout(90_000);
 
   // ---------- 세션 쿠키에 Secure가 붙는지 먼저 확인 ----------
-  const raw = await pwRequest.newContext({
-    baseURL,
-    ignoreHTTPSErrors: true,
-    extraHTTPHeaders: { "X-BoardBite-Client": "1" },
-  });
+  // 이 시점에 존재하는 계정은 부트스트랩 ADMIN 하나뿐이라 그 계정으로 확인한다.
+  const raw = await secureContext(baseURL);
   const loginRes = await raw.post("/api/staff/login", {
-    data: { username: "front", password: INITIAL.front },
+    data: { username: "admin", password: INITIAL_ADMIN_PASSWORD },
   });
   expect(loginRes.ok()).toBeTruthy();
   const sessionCookie = (await raw.storageState()).cookies.find((c) => c.name === "boardbite.sid");
@@ -63,11 +63,20 @@ test("production 조건(HTTPS + Secure 쿠키)에서 주문→조리→서빙→
   expect(sessionCookie!.sameSite).toBe("Lax");
   await raw.dispose();
 
-  // ---------- 온보딩(강제 비밀번호 변경) ----------
-  const front = await onboard(baseURL, "front");
-  const pos = await onboard(baseURL, "pos");
-  const serving = await onboard(baseURL, "serving");
-  const admin = await onboard(baseURL, "admin");
+  // ---------- ADMIN 온보딩(강제 비밀번호 변경) ----------
+  const admin = await secureContext(baseURL);
+  expect(
+    (await admin.post("/api/staff/login", { data: { username: "admin", password: INITIAL_ADMIN_PASSWORD } })).ok(),
+    "admin 초기 로그인 실패",
+  ).toBeTruthy();
+  const changed = await admin.post("/api/staff/change-password", {
+    data: { currentPassword: INITIAL_ADMIN_PASSWORD, newPassword: OPERATIONAL.admin },
+  });
+  expect(changed.ok(), `admin 비밀번호 변경 실패: ${await changed.text()}`).toBeTruthy();
+  expect(
+    (await admin.post("/api/staff/login", { data: { username: "admin", password: OPERATIONAL.admin } })).ok(),
+    "admin 재로그인 실패",
+  ).toBeTruthy();
 
   // ---------- ADMIN은 MFA 설정 전까지 관리 기능을 쓸 수 없다 ----------
   const beforeMfa = await admin.get("/api/staff/admin/users");
@@ -84,6 +93,23 @@ test("production 조건(HTTPS + Secure 쿠키)에서 주문→조리→서빙→
 
   // 이제 관리 기능이 열린다.
   expect((await admin.get("/api/staff/admin/users")).status()).toBe(200);
+
+  // ---------- 직원 계정은 ADMIN만 만들 수 있다 ----------
+  for (const [username, role] of Object.entries(STAFF_ROLES)) {
+    const created = await admin.post("/api/staff/admin/users", {
+      data: {
+        username,
+        password: OPERATIONAL[username as keyof typeof STAFF_ROLES],
+        displayName: username,
+        role,
+      },
+    });
+    expect(created.ok(), `${username} 계정 생성 실패: ${created.status()} ${await created.text()}`).toBeTruthy();
+  }
+
+  const front = await loginAs(baseURL, "front");
+  const pos = await loginAs(baseURL, "pos");
+  const serving = await loginAs(baseURL, "serving");
 
   // ---------- 테이블/메뉴 준비 ----------
   const tableNumber = Math.floor(Math.random() * 900_000) + 100_000;

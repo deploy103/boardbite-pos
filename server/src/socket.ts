@@ -4,7 +4,7 @@ import type { Server as HttpServer } from "node:http";
 import type { SessionData } from "express-session";
 import { Server } from "socket.io";
 import { prisma } from "./prisma.js";
-import { env } from "./env.js";
+import { env, isProduction } from "./env.js";
 import { appEvents, RealtimeEvent } from "./realtime.js";
 import { CUSTOMER_SESSION_COOKIE, resolveCustomerSession } from "./services/customerSession.js";
 import type { StaffRole } from "./types/domain.js";
@@ -51,6 +51,9 @@ async function resolveStaffFromCookies(cookies: Record<string, string | undefine
   if (data.authVersion !== user.authVersion) return null;
   // 비밀번호 변경이 강제된 계정은 아직 정상 업무 세션이 아니다.
   if (user.mustResetPassword) return null;
+  // REST의 requireOnboardingComplete와 같은 기준을 적용한다 — production에서 MFA를 아직
+  // 설정하지 않은 ADMIN은 업무 API가 전부 403이므로, 실시간 이벤트도 받아서는 안 된다.
+  if (isProduction && user.role === "ADMIN" && !user.mfaEnabled) return null;
 
   // 클라이언트가 보내는 값이 아니라 DB의 현재 role만 사용한다.
   return { id: user.id, role: user.role as StaffRole };

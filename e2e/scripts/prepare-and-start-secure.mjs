@@ -42,7 +42,7 @@ if (!existsSync(keyPath) || !existsSync(certPath)) {
 }
 
 // ---------- production 기준을 통과하는 환경변수 ----------
-// assertProductionEnv()가 요구하는 조건(32자 이상 secret, 15자 이상이고 서로 다른 계정 비밀번호)을
+// assertProductionEnv()가 요구하는 조건(32자 이상 secret, 15자 이상 ADMIN 비밀번호)을
 // 모두 만족해야 서버가 뜬다. 여기 값은 로컬 E2E 전용이며 실제 운영에 쓰이지 않는다.
 const env = {
   ...process.env,
@@ -54,20 +54,16 @@ const env = {
   MFA_ENCRYPTION_KEY: "e2e-secure-mfa-encryption-key-0123456789abcdef",
   ADMINID: "admin",
   ADMINPASSWORD: "e2e-secure-admin-initial-pw-01",
-  FRONTID: "front",
-  FRONTPW: "e2e-secure-front-initial-pw-02",
-  POSID: "pos",
-  POSPW: "e2e-secure-pos-initial-pw-03",
-  SERVING_ID: "serving",
-  SERVING_PW: "e2e-secure-serving-initial-pw-04",
+  // 직원 계정은 시드되지 않는다 — 스펙이 ADMIN(MFA 완료)으로 관리자 API를 호출해 만든다.
   STAFF_LOGIN_RATE_LIMIT_PER_5MIN: "100000",
+  SENSITIVE_AUTH_RATE_LIMIT_PER_10MIN: "100000",
   CUSTOMER_RATE_LIMIT_PER_MIN: "100000",
 };
 
 console.log("[e2e-secure] migrating database...");
 execSync("npx prisma migrate deploy", { cwd: serverDir, stdio: "inherit", env });
 
-console.log("[e2e-secure] seeding bootstrap accounts...");
+console.log("[e2e-secure] seeding bootstrap admin...");
 execSync("npx tsx prisma/seed.ts", { cwd: serverDir, stdio: "inherit", env });
 
 console.log(`[e2e-secure] starting app on :${APP_PORT} (NODE_ENV=production)...`);
