@@ -15,6 +15,7 @@ type Payment = {
   createdAt: string;
   createdBy: { displayName: string } | null;
   tableSession: { table: { number: number } } | null;
+  counterSale: { id: string; saleNo: number; status: string } | null;
 };
 
 const KIND_LABEL: Record<Payment["kind"], string> = {
@@ -28,6 +29,7 @@ export default function PaymentsPanel() {
   const [payments, setPayments] = useState<Payment[]>([]);
   const [tableNumber, setTableNumber] = useState("");
   const [kind, setKind] = useState("");
+  const [source, setSource] = useState("");
   const [searched, setSearched] = useState(false);
   const { error, setError, wrap } = useErrorBanner();
 
@@ -35,6 +37,7 @@ export default function PaymentsPanel() {
     const params = new URLSearchParams();
     if (tableNumber) params.set("tableNumber", tableNumber);
     if (kind) params.set("kind", kind);
+    if (source) params.set("source", source);
     params.set("limit", "200");
     const d = await api.get(`/api/staff/admin/payments?${params.toString()}`);
     setPayments(d.payments);
@@ -67,6 +70,11 @@ export default function PaymentsPanel() {
           <option value="VOID">취소</option>
           <option value="REFUND">환불</option>
         </select>
+        <select className="field" style={{ maxWidth: 200 }} value={source} onChange={(e) => setSource(e.target.value)}>
+          <option value="">테이블 + 현장 전체</option>
+          <option value="TABLE">테이블 정산만</option>
+          <option value="COUNTER">FRONT 현장 결제만</option>
+        </select>
         <button className="btn-primary" style={{ width: 120 }} onClick={search}>
           검색
         </button>
@@ -81,6 +89,9 @@ export default function PaymentsPanel() {
             <strong>{KIND_LABEL[p.kind]}</strong> · {p.amount.toLocaleString()}원{" "}
             {p.method && <span className="badge">{p.method}</span>}{" "}
             {p.tableSession && <span className="text-muted">{p.tableSession.table.number}번 테이블</span>}
+            {p.counterSale && (
+              <span className="text-muted">현장 주문 #{String(p.counterSale.saleNo).padStart(3, "0")}</span>
+            )}
             <div className="text-muted">
               {new Date(p.createdAt).toLocaleString()} · {p.createdBy?.displayName ?? "-"}
             </div>

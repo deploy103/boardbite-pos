@@ -13,4 +13,6 @@ export const RealtimeEvent = {
   TableClosed: "table:closed",
   PaymentRecorded: "payment:recorded",
   StaffCallRequested: "staff-call:requested",
+  /** FRONT 현장 거래 확정/수령/취소 — 거래 목록과 KDS가 다시 조회할 시점을 알린다. */
+  CounterSaleRecorded: "counter-sale:recorded",
 } as const;

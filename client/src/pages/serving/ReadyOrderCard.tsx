@@ -40,14 +40,19 @@ export default function ReadyOrderCard({
       </div>
 
       {order.items.map((item) => (
-        <div key={item.id}>
-          {item.nameSnapshot} × {item.quantity}
+        <div key={item.id} className="kds-item">
+          <div className="kds-item__name">
+            {item.nameSnapshot} × {item.quantity}
+          </div>
           {item.options.length > 0 && (
-            <div className="text-muted" style={{ paddingLeft: 12 }}>
+            <ul className="kds-item__options">
               {item.options.map((o) => (
-                <div key={o.id}>- {o.nameSnapshot}</div>
+                <li key={o.id}>
+                  {o.groupNameSnapshot ? `${o.groupNameSnapshot}: ` : ""}
+                  {o.nameSnapshot}
+                </li>
               ))}
-            </div>
+            </ul>
           )}
         </div>
       ))}

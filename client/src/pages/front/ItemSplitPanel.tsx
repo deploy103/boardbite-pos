@@ -10,7 +10,7 @@ interface FlatItem {
   id: string;
   nameSnapshot: string;
   unitPrice: number;
-  options: { id: string; nameSnapshot: string; extraPriceSnapshot: number }[];
+  options: { id: string; groupNameSnapshot: string | null; nameSnapshot: string; extraPriceSnapshot: number }[];
   paidQuantity: number;
   remainingQuantity: number;
 }
@@ -107,7 +107,11 @@ export default function ItemSplitPanel({
               <div>
                 <div className="checkout-item-row__name">{item.nameSnapshot}</div>
                 {item.options.length > 0 && (
-                  <div className="text-muted">{item.options.map((o) => o.nameSnapshot).join(", ")}</div>
+                  <div className="text-muted">
+                    {item.options
+                      .map((o) => `${o.groupNameSnapshot ? `${o.groupNameSnapshot}: ` : ""}${o.nameSnapshot}`)
+                      .join(", ")}
+                  </div>
                 )}
                 <div className="text-muted">
                   {formatWon(lineUnitPrice(item))}

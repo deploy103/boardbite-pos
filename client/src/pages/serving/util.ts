@@ -6,7 +6,7 @@ export interface ServingOrderItem {
   id: string;
   nameSnapshot: string;
   quantity: number;
-  options: { id: string; nameSnapshot: string }[];
+  options: { id: string; groupNameSnapshot: string | null; nameSnapshot: string; extraPriceSnapshot: number }[];
 }
 
 export interface ServingOrder {

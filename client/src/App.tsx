@@ -6,6 +6,7 @@ import StaffMfaSetup from "./pages/StaffMfaSetup.js";
 import AdminHome from "./pages/AdminHome.js";
 import FrontHome from "./pages/FrontHome.js";
 import CheckoutPage from "./pages/front/CheckoutPage.js";
+import CounterSalePage from "./pages/front/CounterSalePage.js";
 import PosHome from "./pages/pos/PosHome.js";
 import ServingHome from "./pages/serving/ServingHome.js";
 import CustomerApp from "./pages/customer/CustomerApp.js";
@@ -22,6 +23,8 @@ export default function App() {
       <Route path="/admin" element={<AdminHome />} />
       <Route path="/front" element={<FrontHome />} />
       <Route path="/front/checkout/:tableSessionId" element={<CheckoutPage />} />
+      {/* FRONT 현장 결제 — 테이블을 열지 않고 카운터에서 바로 수납을 기록한다(요구사항.md §5). */}
+      <Route path="/front/counter" element={<CounterSalePage />} />
       <Route path="/pos" element={<PosHome />} />
       <Route path="/serving" element={<ServingHome />} />
       <Route path="/t/:slug" element={<CustomerApp />} />

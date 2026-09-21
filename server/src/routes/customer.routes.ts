@@ -11,6 +11,7 @@ import {
   resolveCustomerSession,
 } from "../services/customerSession.js";
 import { createOrder, OrderValidationError } from "../services/order.js";
+import { listSellableMenu } from "../services/menuCatalog.js";
 import { computeBill } from "../services/billing.js";
 import { recordAuditLog, recordAuditLogBestEffort } from "../services/auditLog.js";
 import { appEvents, RealtimeEvent } from "../realtime.js";
@@ -117,17 +118,13 @@ customerRouter.post("/join/:slug", async (req, res) => {
   res.json({ open: true, joined: true, tableNumber: table.number });
 });
 
+/**
+ * 손님 메뉴. FRONT 전용 상품(룰렛/보드게임/닌텐도 등)과 논리 삭제된 메뉴·옵션은 여기 나오지 않는다.
+ * 목록에서 감추는 것만으로는 부족하므로, ID를 직접 보내는 주문도 order.ts의 채널 검증이 거부한다
+ * (요구사항.md §4 — 손님이 ID로 직접 주문해도 거부).
+ */
 customerRouter.get("/menu", requireTableSession, async (_req, res) => {
-  const categories = await prisma.menuCategory.findMany({
-    orderBy: { sortOrder: "asc" },
-    include: {
-      items: {
-        where: { isActive: true },
-        orderBy: { sortOrder: "asc" },
-        include: { optionGroups: { include: { choices: { where: { isActive: true } } } } },
-      },
-    },
-  });
+  const categories = await listSellableMenu("TABLE");
   res.json({ categories });
 });
 

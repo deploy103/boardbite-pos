@@ -39,6 +39,7 @@ export interface CartLine {
 
 export interface OrderItemOption {
   id: string;
+  groupNameSnapshot: string | null;
   nameSnapshot: string;
   extraPriceSnapshot: number;
 }

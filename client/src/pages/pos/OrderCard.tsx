@@ -6,13 +6,26 @@ export interface KdsOrder {
   status: string;
   note: string | null;
   createdAt: string;
-  tableSession: { table: { number: number } };
+  /** 테이블 주문이면 세션이, FRONT 현장 주문이면 null이다. */
+  tableSession: { table: { number: number } } | null;
+  /** 현장 거래 주문이면 손님에게 불러 줄 주문번호가 들어 있다. */
+  counterSale?: { id: string; saleNo: number; status: string } | null;
   items: {
     id: string;
     nameSnapshot: string;
     quantity: number;
-    options: { id: string; nameSnapshot: string }[];
+    options: { id: string; groupNameSnapshot: string | null; nameSnapshot: string; extraPriceSnapshot: number }[];
   }[];
+}
+
+/**
+ * 주문의 출처 표시. 테이블 번호가 없다고 화면이 깨지면 안 된다 —
+ * 현장 거래는 "현장 주문 #001"로 보여준다(요구사항.md §5.4).
+ */
+export function orderSourceLabel(order: Pick<KdsOrder, "tableSession" | "counterSale">): string {
+  if (order.tableSession) return `${order.tableSession.table.number}번 테이블`;
+  if (order.counterSale) return `현장 주문 #${String(order.counterSale.saleNo).padStart(3, "0")}`;
+  return "현장 주문";
 }
 
 function formatElapsed(ms: number) {
@@ -41,7 +54,7 @@ export default function OrderCard({
     <div className={`kds-card ${level === "danger" ? "kds-card--danger" : level === "warn" ? "kds-card--warn" : ""}`}>
       <div className="kds-card-header">
         <div>
-          <div className="kds-table-number">{order.tableSession.table.number}번 테이블</div>
+          <div className="kds-table-number">{orderSourceLabel(order)}</div>
           <div className="kds-order-id">#{order.id.slice(-6).toUpperCase()}</div>
         </div>
         <div style={{ textAlign: "right" }}>
@@ -52,14 +65,20 @@ export default function OrderCard({
       </div>
 
       {order.items.map((item) => (
-        <div key={item.id}>
-          {item.nameSnapshot} × {item.quantity}
+        <div key={item.id} className="kds-item">
+          <div className="kds-item__name">
+            {item.nameSnapshot} × {item.quantity}
+          </div>
+          {/* 옵션은 메뉴 바로 아래에 줄바꿈 없이 잘리지 않게 전부 보여준다(요구사항.md §3.3). */}
           {item.options.length > 0 && (
-            <div className="text-muted" style={{ paddingLeft: 12 }}>
+            <ul className="kds-item__options">
               {item.options.map((o) => (
-                <div key={o.id}>- {o.nameSnapshot}</div>
+                <li key={o.id}>
+                  {o.groupNameSnapshot ? `${o.groupNameSnapshot}: ` : ""}
+                  {o.nameSnapshot}
+                </li>
               ))}
-            </div>
+            </ul>
           )}
         </div>
       ))}

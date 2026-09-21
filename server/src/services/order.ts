@@ -4,6 +4,8 @@ import { recordAuditLogBestEffort } from "./auditLog.js";
 import { appEvents, RealtimeEvent } from "../realtime.js";
 import type { OrderStatus } from "../types/domain.js";
 import { maybeAutoSettleTableSession } from "./tableSession.js";
+import { LIVE_OPTION_INCLUDE, channelAllows, servingModeOf, type ServingMode } from "./menuCatalog.js";
+import type { Db } from "./billing.js";
 
 export interface CreateOrderItemInput {
   menuItemId: string;
@@ -25,6 +27,8 @@ type ChoiceWithGroup = Prisma.OptionChoiceGetPayload<{ include: { group: true } 
 
 export interface OrderItemOptionSnapshot {
   optionChoiceId: string;
+  /** 주문 시점의 옵션 그룹명 스냅샷 — 나중에 그룹 이름이 바뀌어도 주방/영수증 표시가 흔들리지 않는다. */
+  groupNameSnapshot: string;
   nameSnapshot: string;
   extraPriceSnapshot: number;
 }
@@ -55,12 +59,15 @@ export function validateItemOptions(
 
   for (const choiceId of optionChoiceIds) {
     const choice = optionChoiceMap.get(choiceId);
-    if (!choice || !choice.isActive || choice.group.menuItemId !== menuItem.id) {
+    const groupIsLive = choice ? menuItem.optionGroups.some((g) => g.id === choice.groupId) : false;
+    if (!choice || !choice.isActive || choice.deletedAt || !groupIsLive || choice.group.menuItemId !== menuItem.id) {
+      // 삭제/비활성 그룹의 선택지는 "메뉴에 속한 활성 옵션"이 아니므로 동일하게 거부한다.
       throw new OrderValidationError("올바르지 않은 옵션이 포함되어 있습니다.");
     }
     selectedByGroup.set(choice.groupId, (selectedByGroup.get(choice.groupId) ?? 0) + 1);
     options.push({
       optionChoiceId: choice.id,
+      groupNameSnapshot: choice.group.name,
       nameSnapshot: choice.name,
       extraPriceSnapshot: choice.extraPrice,
     });
@@ -72,52 +79,72 @@ export function validateItemOptions(
       throw new OrderValidationError(`'${group.name}' 옵션은 하나만 선택할 수 있습니다.`);
     }
     if (group.required && count === 0) {
+      // 고를 수 있는 선택지가 하나도 없는 필수 그룹은 "선택 불가"가 아니라 "판매 불가"다
+      // (요구사항.md §3.1) — 조용히 통과시키면 필수 규칙이 사실상 사라진다.
       const hasSelectableChoice = group.choices.some((choice) => choice.isActive);
-      if (hasSelectableChoice) {
-        throw new OrderValidationError(`'${group.name}' 옵션을 선택해 주세요.`);
-      }
+      throw new OrderValidationError(
+        hasSelectableChoice
+          ? `'${group.name}' 옵션을 선택해 주세요.`
+          : `${menuItem.name}의 '${group.name}' 옵션에 선택할 수 있는 항목이 없어 지금은 주문할 수 없어요. 관리자에게 알려 주세요.`,
+      );
     }
   }
 
   return options;
 }
 
+export interface ResolvedOrderLine {
+  menuItemId: string;
+  nameSnapshot: string;
+  unitPrice: number;
+  quantity: number;
+  servingMode: ServingMode;
+  options: OrderItemOptionSnapshot[];
+  /** (기본단가 + 옵션 추가금) × 수량 — 할인 전 금액. */
+  lineTotal: number;
+}
+
 /**
- * 주문 생성. 가격/옵션/품절 여부는 전부 서버가 DB에서 다시 계산하며,
- * 클라이언트가 보낸 가격/합계는 절대 신뢰하지 않는다(docs/SECURITY.md §1).
+ * 장바구니 입력을 "서버가 계산한 주문 줄"로 바꾼다. 테이블 주문(createOrder)과
+ * FRONT 현장 결제(counterSale.ts)가 같은 함수를 쓰므로 가격/옵션/채널/품절/삭제 규칙이
+ * 두 경로에서 어긋날 수 없다. 클라이언트가 보낸 가격·합계는 어디서도 읽지 않는다.
+ *
+ * `db`에 트랜잭션 클라이언트를 넘기면 그 트랜잭션 안의 최신 상태로 재검증한다
+ * (확정 직전 재검증 — 요구사항.md §12.2 4단계).
  */
-export async function createOrder(input: CreateOrderInput) {
-  if (input.items.length === 0) {
+export async function resolveOrderLines(
+  items: CreateOrderItemInput[],
+  target: "TABLE" | "FRONT",
+  db: Db = prisma,
+): Promise<ResolvedOrderLine[]> {
+  if (items.length === 0) {
     throw new OrderValidationError("주문할 메뉴를 선택해 주세요.");
   }
 
-  // (tableSessionId, clientKey) 조합을 UNIQUE 제약으로 묶어 더블탭/재전송 중복을 원자적으로 차단한다.
-  const idempotencyKey = `${input.tableSessionId}:${input.clientIdempotencyKey}`;
-
-  const existing = await prisma.order.findUnique({
-    where: { idempotencyKey },
-    include: { items: { include: { options: true } } },
-  });
-  if (existing) return existing;
-
-  const menuItemIds = [...new Set(input.items.map((i) => i.menuItemId))];
-  const menuItems = await prisma.menuItem.findMany({
+  const menuItemIds = [...new Set(items.map((i) => i.menuItemId))];
+  const menuItems = await db.menuItem.findMany({
     where: { id: { in: menuItemIds } },
-    include: { optionGroups: { include: { choices: true } } },
+    include: LIVE_OPTION_INCLUDE,
   });
   const menuItemMap = new Map(menuItems.map((m) => [m.id, m]));
 
-  const allOptionChoiceIds = [...new Set(input.items.flatMap((i) => i.optionChoiceIds))];
-  const optionChoices = await prisma.optionChoice.findMany({
-    where: { id: { in: allOptionChoiceIds } },
-    include: { group: true },
-  });
+  const allOptionChoiceIds = [...new Set(items.flatMap((i) => i.optionChoiceIds))];
+  const optionChoices = allOptionChoiceIds.length
+    ? await db.optionChoice.findMany({ where: { id: { in: allOptionChoiceIds } }, include: { group: true } })
+    : [];
   const optionChoiceMap = new Map(optionChoices.map((o) => [o.id, o]));
 
-  const itemsToCreate = input.items.map((item) => {
+  return items.map((item) => {
     const menuItem = menuItemMap.get(item.menuItemId);
-    if (!menuItem || !menuItem.isActive) {
+    if (!menuItem || !menuItem.isActive || menuItem.deletedAt) {
       throw new OrderValidationError("판매하지 않는 메뉴가 포함되어 있습니다.");
+    }
+    if (!channelAllows(menuItem.channel, target)) {
+      throw new OrderValidationError(
+        target === "TABLE"
+          ? `${menuItem.name}은(는) 카운터에서만 판매하는 상품이에요.`
+          : `${menuItem.name}은(는) 테이블 주문 전용 상품이에요.`,
+      );
     }
     if (menuItem.isSoldOut) {
       throw new OrderValidationError(`${menuItem.name}은(는) 품절되었습니다.`);
@@ -127,15 +154,35 @@ export async function createOrder(input: CreateOrderInput) {
     }
 
     const options = validateItemOptions(menuItem, item.optionChoiceIds, optionChoiceMap);
+    const optionsTotal = options.reduce((sum, o) => sum + o.extraPriceSnapshot, 0);
 
     return {
       menuItemId: menuItem.id,
       nameSnapshot: menuItem.name,
       unitPrice: menuItem.price,
       quantity: item.quantity,
+      servingMode: servingModeOf(menuItem),
       options,
+      lineTotal: (menuItem.price + optionsTotal) * item.quantity,
     };
   });
+}
+
+/**
+ * 주문 생성. 가격/옵션/품절 여부는 전부 서버가 DB에서 다시 계산하며,
+ * 클라이언트가 보낸 가격/합계는 절대 신뢰하지 않는다(docs/SECURITY.md §1).
+ */
+export async function createOrder(input: CreateOrderInput) {
+  // (tableSessionId, clientKey) 조합을 UNIQUE 제약으로 묶어 더블탭/재전송 중복을 원자적으로 차단한다.
+  const idempotencyKey = `${input.tableSessionId}:${input.clientIdempotencyKey}`;
+
+  const existing = await prisma.order.findUnique({
+    where: { idempotencyKey },
+    include: { items: { include: { options: true } } },
+  });
+  if (existing) return existing;
+
+  const lines = await resolveOrderLines(input.items, "TABLE");
 
   try {
     const order = await prisma.$transaction(async (tx) => {
@@ -145,11 +192,12 @@ export async function createOrder(input: CreateOrderInput) {
           idempotencyKey,
           note: input.note?.slice(0, 200),
           items: {
-            create: itemsToCreate.map((item) => ({
+            create: lines.map((item) => ({
               menuItemId: item.menuItemId,
               nameSnapshot: item.nameSnapshot,
               unitPrice: item.unitPrice,
               quantity: item.quantity,
+              servingMode: item.servingMode,
               options: { create: item.options },
             })),
           },
@@ -200,9 +248,14 @@ export class OrderStateError extends Error {
 }
 
 const ORDER_INCLUDE = { items: { include: { options: true } } } as const;
+/**
+ * 주방/서빙 화면이 쓰는 include. 현장 거래 주문은 tableSession이 null이므로 counterSale까지 함께 읽어
+ * "현장 주문 #번호"로 표시할 수 있게 한다(요구사항.md §5.4 — 테이블 번호 null로 화면이 깨지면 안 된다).
+ */
 const ORDER_WITH_TABLE_INCLUDE = {
   items: { include: { options: true } },
   tableSession: { include: { table: true } },
+  counterSale: { select: { id: true, saleNo: true, status: true } },
 } as const;
 
 /**
@@ -245,10 +298,20 @@ async function applyTransition(
   });
   appEvents.emit(RealtimeEvent.OrderStatusChanged, {
     tableSessionId: updated.tableSessionId,
+    counterSaleId: updated.counterSaleId,
     orderId: updated.id,
     status: updated.status,
   });
   return updated;
+}
+
+/**
+ * 테이블 주문에만 의미가 있는 자동 정산 평가. 현장 거래 주문(tableSessionId=null)은
+ * 테이블 상태 머신을 전혀 건드리지 않는다(요구사항.md §5.4 — 테이블 배정/자동 종료 로직 실행 금지).
+ */
+async function settleIfTableOrder(order: { tableSessionId: string | null }) {
+  if (!order.tableSessionId) return;
+  await maybeAutoSettleTableSession(order.tableSessionId);
 }
 
 export function acceptOrder(orderId: string, staffId: string) {
@@ -257,7 +320,7 @@ export function acceptOrder(orderId: string, staffId: string) {
 
 export async function rejectOrder(orderId: string, staffId: string, reason: string) {
   const order = await applyTransition(orderId, ["NEW"], "REJECTED", { rejectReason: reason }, staffId, "ORDER_REJECTED", { reason });
-  await maybeAutoSettleTableSession(order.tableSessionId);
+  await settleIfTableOrder(order);
   return order;
 }
 
@@ -272,7 +335,7 @@ export function markReady(orderId: string, staffId: string) {
 export async function markServed(orderId: string, staffId: string) {
   const order = await applyTransition(orderId, ["READY"], "SERVED", { servedAt: new Date() }, staffId, "ORDER_SERVED");
   // 완납 후 마지막 미서빙 주문이 이제 SERVED가 되었다면 테이블을 자동 CLOSE한다(요구사항.md §4.4).
-  await maybeAutoSettleTableSession(order.tableSessionId);
+  await settleIfTableOrder(order);
   return order;
 }
 
@@ -292,7 +355,8 @@ export async function cancelOrder(orderId: string, staffId: string, reason: stri
     { reason },
   );
   // 취소로 인해 미수금이 음수(환불 필요)가 될 수 있다 — computeBill()이 그대로 드러내며 별도 플래그는 두지 않는다.
-  await maybeAutoSettleTableSession(order.tableSessionId);
+  // 현장 거래는 이미 선결제이므로 여기서 자동 환불하지 않고, FRONT 거래 목록이 "환불 필요"로 표시한다(요구사항.md §5.4).
+  await settleIfTableOrder(order);
   return order;
 }
 

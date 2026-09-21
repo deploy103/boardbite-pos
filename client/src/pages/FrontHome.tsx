@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { api, errorMessage, ApiError } from "../lib/api.js";
 import { useStaffMe } from "../lib/useStaffMe.js";
 import ConnectionBanner from "../components/ConnectionBanner.js";
+import CounterSalesList from "./front/CounterSalesList.js";
 
 interface TableRow {
   id: string;
@@ -40,8 +41,12 @@ function formatTime(iso: string | null): string {
   return new Date(iso).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" });
 }
 
+type FrontTab = "tables" | "counter";
+
 export default function FrontHome() {
   const { me } = useStaffMe("FRONT");
+  const [tab, setTab] = useState<FrontTab>("tables");
+  const [openCounterCount, setOpenCounterCount] = useState(0);
   const [tables, setTables] = useState<TableRow[]>([]);
   const [plans, setPlans] = useState<GamePlan[]>([]);
   const [openingId, setOpeningId] = useState<string | null>(null);
@@ -54,6 +59,13 @@ export default function FrontHome() {
   async function refresh() {
     const data = await api.get("/api/staff/front/tables");
     setTables(data.tables);
+    // 미수령/환불 필요 현장 거래 건수를 배지로 계속 보여준다 — 마감 전에 놓치지 않게.
+    try {
+      const counter = await api.get("/api/staff/front/counter/sales?onlyOpen=true&limit=200");
+      setOpenCounterCount(counter.sales.length);
+    } catch {
+      // 현장 거래 조회 실패가 테이블 현황 표시를 막지는 않는다.
+    }
   }
 
   useEffect(() => {
@@ -129,9 +141,28 @@ export default function FrontHome() {
   return (
     <div className="page page--wide">
       <ConnectionBanner />
-      <h1>FRONT · 테이블 현황</h1>
+      <h1>FRONT</h1>
+      <div className="front-actions">
+        <Link to="/front/counter" className="btn-primary front-counter-cta">
+          현장 결제 시작
+        </Link>
+        <span className="text-muted">테이블을 열지 않고 룰렛·보드게임·음료·조리 메뉴를 바로 판매합니다.</span>
+      </div>
+
+      <div className="seg-tabs" role="tablist">
+        <button className="seg-tab" role="tab" aria-current={tab === "tables"} onClick={() => setTab("tables")}>
+          테이블 현황
+        </button>
+        <button className="seg-tab" role="tab" aria-current={tab === "counter"} onClick={() => setTab("counter")}>
+          현장 거래 {openCounterCount > 0 && <span className="badge badge--warn">{openCounterCount}</span>}
+        </button>
+      </div>
+
       {error && <p className="error-text">{error}</p>}
 
+      {tab === "counter" && <CounterSalesList role={me.role} mfaEnabled={me.mfaEnabled} />}
+      {tab === "tables" && (
+      <>
       {issuedCode && (
         <div className="join-code-card">
           <div className="table-hero__number">{issuedCode.tableNumber}번 테이블 입장 코드</div>
@@ -239,6 +270,8 @@ export default function FrontHome() {
           </div>
         ))}
       </div>
+      </>
+      )}
     </div>
   );
 }

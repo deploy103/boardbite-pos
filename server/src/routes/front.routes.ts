@@ -15,6 +15,20 @@ import {
 import { computeBill, computeItemPaymentStatus } from "../services/billing.js";
 import { createPayment, createDiscount, voidPayment, PaymentValidationError } from "../services/payment.js";
 import { splitEvenly } from "../services/splitEvenly.js";
+import { blockedRequiredGroups, listSellableMenu } from "../services/menuCatalog.js";
+import { CouponError, lookupCouponForFront } from "../services/coupon.js";
+import { applyTableCoupon, previewTableCoupon } from "../services/tableCoupon.js";
+import {
+  CounterSaleError,
+  confirmCounterSale,
+  findCounterSaleByIdempotencyKey,
+  getCounterSaleDetail,
+  listCounterSales,
+  markCounterOrderPickedUp,
+  quoteCounterSale,
+} from "../services/counterSale.js";
+import { OrderValidationError } from "../services/order.js";
+import { recordAuditLogBestEffort } from "../services/auditLog.js";
 
 export const frontRouter = Router();
 frontRouter.use(staffGate("FRONT"));
@@ -373,5 +387,224 @@ frontRouter.post("/payments/:paymentId/void", requireStepUp, async (req, res) =>
       return;
     }
     throw err;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// FRONT 현장 결제 (요구사항.md §5, §6.2)
+//
+// 테이블을 열지 않고 카운터에서 바로 수납을 기록하는 경로. 손님 API에는 어떤 것도 노출되지 않으며,
+// 이 라우터 전체가 staffGate("FRONT")(ADMIN 포함) 뒤에 있다.
+// ---------------------------------------------------------------------------
+
+/** CounterSaleError / CouponError / OrderValidationError를 공통 응답 형식으로 변환한다. */
+function sendCounterError(res: import("express").Response, err: unknown): boolean {
+  if (err instanceof CounterSaleError) {
+    res.status(err.status).json({ error: err.message, code: err.code, ...(err.extra ?? {}) });
+    return true;
+  }
+  if (err instanceof CouponError) {
+    res.status(err.status).json({ error: err.message, code: err.code });
+    return true;
+  }
+  if (err instanceof OrderValidationError) {
+    res.status(400).json({ error: err.message, code: "ORDER_INVALID" });
+    return true;
+  }
+  return false;
+}
+
+/** 현장 결제에서 팔 수 있는 메뉴(FRONT 전용 + 공통). 테이블 전용 메뉴는 여기 나오지 않는다. */
+frontRouter.get("/counter/menu", async (_req, res) => {
+  const categories = await listSellableMenu("FRONT");
+  res.json({
+    categories: categories.map((category) => ({
+      ...category,
+      items: category.items.map((item) => ({
+        ...item,
+        // 필수 그룹에 고를 선택지가 없으면 판매할 수 없다 — 화면이 담기 버튼을 막는 근거다.
+        blockedRequiredGroups: blockedRequiredGroups(item),
+      })),
+    })),
+  });
+});
+
+const cartSchema = z.object({
+  items: z
+    .array(
+      z.object({
+        menuItemId: z.string().min(1),
+        quantity: z.number().int().min(1).max(50),
+        optionChoiceIds: z.array(z.string().min(1)).max(20).default([]),
+      }),
+    )
+    .min(1)
+    .max(50),
+  couponCode: z.string().max(10).nullable().optional(),
+  couponTargetLineIndex: z.number().int().min(0).max(49).nullable().optional(),
+});
+
+/** 견적. **아무것도 예약하거나 소진하지 않는다** — 쿠폰 상태는 그대로다(요구사항.md §6.2). */
+frontRouter.post("/counter/quote", async (req, res) => {
+  const parsed = cartSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "장바구니 내용이 올바르지 않아요." });
+    return;
+  }
+  try {
+    const { quote } = await quoteCounterSale(parsed.data, req.staff!.id);
+    res.json({ quote });
+  } catch (err) {
+    if (!sendCounterError(res, err)) throw err;
+  }
+});
+
+const confirmSchema = cartSchema.extend({
+  idempotencyKey: z.string().min(1).max(100),
+  methodCode: z.string().max(30).nullable().optional(),
+  tenderedAmount: z.number().int().min(0).nullable().optional(),
+  expectedQuoteHash: z.string().max(128).nullable().optional(),
+});
+
+/**
+ * 결제 확정. 같은 키 재전송은 최초 결과를 그대로 돌려주고(이중 수납 없음),
+ * 같은 키에 다른 내용이면 409로 거부한다. 쿠폰 소진과 원장 기록은 한 트랜잭션이다.
+ */
+frontRouter.post("/counter/confirm", async (req, res) => {
+  const parsed = confirmSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "결제 내용이 올바르지 않아요." });
+    return;
+  }
+  try {
+    const { sale, reused } = await confirmCounterSale({ ...parsed.data, staffId: req.staff!.id });
+    res.status(reused ? 200 : 201).json({ sale, reused });
+  } catch (err) {
+    if (!sendCounterError(res, err)) throw err;
+  }
+});
+
+/**
+ * 응답을 놓쳤을 때 "내가 방금 보낸 그 결제"를 되찾는 조회(요구사항.md §5.1).
+ * 화면 새로고침/네트워크 끊김 후 같은 키로 물어보면 완료 여부를 확인할 수 있다.
+ */
+frontRouter.get("/counter/by-key/:clientKey", async (req, res) => {
+  const sale = await findCounterSaleByIdempotencyKey(req.staff!.id, req.params.clientKey);
+  res.json({ sale });
+});
+
+const counterListSchema = z.object({
+  saleNo: z.coerce.number().int().positive().optional(),
+  status: z.enum(["COMPLETED", "CANCELLED"]).optional(),
+  onlyOpen: z.coerce.boolean().optional(),
+  limit: z.coerce.number().int().min(1).max(200).optional(),
+});
+
+frontRouter.get("/counter/sales", async (req, res) => {
+  const parsed = counterListSchema.safeParse(req.query);
+  if (!parsed.success) {
+    res.status(400).json({ error: "검색 조건이 올바르지 않아요." });
+    return;
+  }
+  res.json({ sales: await listCounterSales(parsed.data) });
+});
+
+frontRouter.get("/counter/sales/:id", async (req, res) => {
+  try {
+    res.json({ sale: await getCounterSaleDetail(req.params.id) });
+  } catch (err) {
+    if (!sendCounterError(res, err)) throw err;
+  }
+});
+
+/** 조리 완료된 현장 주문의 수령 완료. 테이블 배정/자동 종료 로직은 실행되지 않는다. */
+frontRouter.post("/counter/orders/:orderId/picked-up", async (req, res) => {
+  try {
+    res.json({ sale: await markCounterOrderPickedUp(req.params.orderId, req.staff!.id) });
+  } catch (err) {
+    if (!sendCounterError(res, err)) throw err;
+  }
+});
+
+/**
+ * 쿠폰 번호 조회. 조회만으로는 절대 소진되지 않는다.
+ * 실패(존재하지 않음/만료/사용 완료 등)는 감사 로그에 남겨 번호 훑기를 사후에 확인할 수 있게 한다.
+ */
+frontRouter.get("/counter/coupons/:code", async (req, res) => {
+  try {
+    const coupon = await lookupCouponForFront(req.params.code);
+    if (coupon.state !== "AVAILABLE") {
+      await recordAuditLogBestEffort({
+        actorType: "STAFF",
+        actorId: req.staff!.id,
+        action: "COUPON_LOOKUP_REJECTED",
+        targetType: "Coupon",
+        targetId: coupon.code,
+        metadata: { state: coupon.state },
+      });
+    }
+    res.json({ coupon });
+  } catch (err) {
+    if (err instanceof CouponError) {
+      await recordAuditLogBestEffort({
+        actorType: "STAFF",
+        actorId: req.staff!.id,
+        action: "COUPON_LOOKUP_FAILED",
+        targetType: "Coupon",
+        metadata: { code: String(req.params.code).slice(0, 10), reason: err.code ?? "UNKNOWN" },
+      });
+    }
+    if (!sendCounterError(res, err)) throw err;
+  }
+});
+
+/**
+ * 테이블 후불 정산의 쿠폰 사용(요구사항.md §6).
+ * 현장 결제와 같은 규칙(거래당 1장, 금액권 잔액 소멸, 상품권은 1개 기본가)을 그대로 적용한다.
+ */
+const tableCouponPreviewSchema = z.object({
+  code: z.string().min(1).max(10),
+  targetOrderItemId: z.string().min(1).nullable().optional(),
+});
+
+frontRouter.post("/table-sessions/:tableSessionId/coupon/preview", async (req, res) => {
+  const parsed = tableCouponPreviewSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "쿠폰 번호를 입력해 주세요." });
+    return;
+  }
+  try {
+    const preview = await previewTableCoupon({
+      tableSessionId: req.params.tableSessionId,
+      rawCode: parsed.data.code,
+      targetOrderItemId: parsed.data.targetOrderItemId,
+    });
+    res.json({ preview });
+  } catch (err) {
+    if (!sendCounterError(res, err)) throw err;
+  }
+});
+
+const tableCouponApplySchema = tableCouponPreviewSchema.extend({
+  idempotencyKey: z.string().min(1).max(100),
+});
+
+frontRouter.post("/table-sessions/:tableSessionId/coupon", async (req, res) => {
+  const parsed = tableCouponApplySchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "쿠폰 번호를 입력해 주세요." });
+    return;
+  }
+  try {
+    const result = await applyTableCoupon({
+      tableSessionId: req.params.tableSessionId,
+      rawCode: parsed.data.code,
+      targetOrderItemId: parsed.data.targetOrderItemId,
+      idempotencyKey: parsed.data.idempotencyKey,
+      staffId: req.staff!.id,
+    });
+    res.status(result.reused ? 200 : 201).json(result);
+  } catch (err) {
+    if (!sendCounterError(res, err)) throw err;
   }
 });

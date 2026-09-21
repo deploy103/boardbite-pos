@@ -13,6 +13,8 @@ export interface PaymentMethod {
 
 export interface OrderItemOption {
   id: string;
+  /** 주문 시점의 옵션 그룹명. 이 기능 도입 이전 주문은 null이다(과거 이름을 지어내지 않는다). */
+  groupNameSnapshot: string | null;
   nameSnapshot: string;
   extraPriceSnapshot: number;
 }

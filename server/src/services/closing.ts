@@ -2,6 +2,7 @@ import { prisma } from "../prisma.js";
 import { recordAuditLog } from "./auditLog.js";
 import { computeBill } from "./billing.js";
 import { computeRevenueSummary, type RevenueByMethod } from "./reporting.js";
+import { listCounterSales } from "./counterSale.js";
 
 export class ClosingError extends Error {
   constructor(message: string, public status = 409) {
@@ -28,6 +29,21 @@ export interface ClosingPreview {
   /** 아직 열려 있거나 미수금이 남은 테이블 — 마감 전에 정리해야 한다. */
   unsettledTables: { tableId: string; tableNumber: number; status: string; remainingAmount: number }[];
   forceClosedSessions: { tableSessionId: string; tableNumber: number; closedAt: Date | null; reason: string | null }[];
+
+  // ---- FRONT 현장 결제 / 쿠폰 (요구사항.md §7) ----
+  /** 일반 할인(직원 수동 입력). 쿠폰 할인과 분리해 표시한다. */
+  manualDiscount: number;
+  /** 쿠폰 할인 = 무료 제공액. 현금 예상액과 매출 어디에도 들어가지 않는다. */
+  couponDiscount: number;
+  /** 테이블/현장 순매출 구분. 현장 판매를 테이블 0번으로 표시하지 않는다. */
+  byChannel: { table: number; counter: number };
+  /** 메뉴에 배분된 수납 + 배분 근거 없는 수납(기존 게임 이용료 등) = 순매출 검산용. */
+  menuPaidRevenue: number;
+  unallocatedCharged: number;
+  counterSale: { completedCount: number; cancelledCount: number };
+  coupon: { redeemedCount: number; cancelledCount: number; amountCouponDiscount: number; itemCouponDiscount: number };
+  /** 아직 손님이 받아가지 않았거나 환불이 필요한 현장 거래 — 마감 전에 정리해야 한다. */
+  openCounterSales: { id: string; saleNo: number; pickupPending: boolean; refundNeeded: boolean; netChargedAmount: number }[];
 }
 
 /**
@@ -61,8 +77,11 @@ export async function computeClosingPreview(since?: Date, until?: Date): Promise
     }),
     prisma.paymentMethod.findMany({ where: { isCash: true }, select: { code: true } }),
     prisma.table.findMany({ where: { status: { in: ["OPEN", "SETTLING"] } }, orderBy: { number: "asc" } }),
+    // TableSession에는 createdAt 컬럼이 없다(openedAt/closedAt만 있다) —
+    // 기존 코드가 createdAtRange를 그대로 쓰는 바람에 마감 미리보기가 항상 Prisma 오류로 실패했다.
+    // 강제 종료 이력은 "언제 닫혔는가"가 기준이므로 closedAt 구간으로 조회한다.
     prisma.tableSession.findMany({
-      where: { ...createdAtRange, closeReason: "FORCE_CLOSED" },
+      where: { closedAt: { gte: openedAt, lte: closedAt }, closeReason: "FORCE_CLOSED" },
       include: { table: { select: { number: true } } },
       orderBy: { closedAt: "desc" },
     }),
@@ -106,6 +125,15 @@ export async function computeClosingPreview(since?: Date, until?: Date): Promise
     });
   }
 
+  // 마감 전에 정리해야 할 현장 거래(미수령 / 환불 필요). 기간과 무관하게 지금 열려 있는 건을 본다.
+  const openCounterSales = (await listCounterSales({ onlyOpen: true, limit: 200 })).map((sale) => ({
+    id: sale.id,
+    saleNo: sale.saleNo,
+    pickupPending: sale.pickupPending,
+    refundNeeded: sale.refundNeeded,
+    netChargedAmount: sale.ledger.netChargedAmount,
+  }));
+
   return {
     openedAt,
     closedAt,
@@ -118,6 +146,14 @@ export async function computeClosingPreview(since?: Date, until?: Date): Promise
     expectedCash,
     cancelledOrderCount: summary.cancelledOrderCount,
     rejectedOrderCount: summary.rejectedOrderCount,
+    manualDiscount: summary.manualDiscount,
+    couponDiscount: summary.couponDiscount,
+    byChannel: summary.byChannel,
+    menuPaidRevenue: summary.menuPaidRevenue,
+    unallocatedCharged: summary.unallocatedCharged,
+    counterSale: summary.counterSale,
+    coupon: summary.coupon,
+    openCounterSales,
     unsettledTables,
     forceClosedSessions: forceClosed.map((s) => ({
       tableSessionId: s.id,

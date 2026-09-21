@@ -5,7 +5,7 @@ import { useStaffSocket } from "../../lib/useStaffSocket.js";
 import ConnectionBanner from "../../components/ConnectionBanner.js";
 import { useOperationSettings } from "../../lib/useOperationSettings.js";
 import { playBeep } from "../../lib/beep.js";
-import OrderCard, { type KdsOrder } from "./OrderCard.js";
+import OrderCard, { orderSourceLabel, type KdsOrder } from "./OrderCard.js";
 import ReasonModal from "./ReasonModal.js";
 
 type Board = Record<"NEW" | "ACCEPTED" | "PREPARING" | "READY", KdsOrder[]>;
@@ -232,7 +232,7 @@ function HistoryPanel({ forcedStatus }: { forcedStatus?: string }) {
         <div key={order.id} className="table-card" style={{ marginBottom: 12 }}>
           <div className="kds-card-header">
             <div>
-              <strong>{order.tableSession.table.number}번 테이블</strong> · <span className="kds-order-id">#{order.id.slice(-6).toUpperCase()}</span>
+              <strong>{orderSourceLabel(order)}</strong> · <span className="kds-order-id">#{order.id.slice(-6).toUpperCase()}</span>
             </div>
             <span className="badge">{STATUS_LABEL[order.status] ?? order.status}</span>
           </div>

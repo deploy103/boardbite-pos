@@ -114,17 +114,30 @@ export function attachSocket(httpServer: HttpServer) {
     }
   });
 
-  appEvents.on(RealtimeEvent.OrderCreated, ({ tableSessionId }: { tableSessionId: string }) => {
-    io.to(`table:${tableSessionId}`).emit(RealtimeEvent.OrderCreated, { tableSessionId });
-    io.to("staff:pos").emit(RealtimeEvent.OrderCreated, { tableSessionId });
-    io.to("staff:front").emit(RealtimeEvent.OrderCreated, { tableSessionId });
+  // 현장 거래 주문은 tableSessionId가 null이다 — 손님 테이블 room으로는 보내지 않고 직원 room에만 알린다.
+  appEvents.on(RealtimeEvent.OrderCreated, (payload: { tableSessionId: string | null; counterSaleId?: string | null }) => {
+    if (payload.tableSessionId) io.to(`table:${payload.tableSessionId}`).emit(RealtimeEvent.OrderCreated, payload);
+    io.to("staff:pos").emit(RealtimeEvent.OrderCreated, payload);
+    io.to("staff:front").emit(RealtimeEvent.OrderCreated, payload);
   });
 
-  appEvents.on(RealtimeEvent.OrderStatusChanged, (payload: { tableSessionId: string; orderId: string; status: string }) => {
-    io.to(`table:${payload.tableSessionId}`).emit(RealtimeEvent.OrderStatusChanged, payload);
-    io.to("staff:pos").emit(RealtimeEvent.OrderStatusChanged, payload);
-    io.to("staff:serving").emit(RealtimeEvent.OrderStatusChanged, payload);
-    io.to("staff:front").emit(RealtimeEvent.OrderStatusChanged, payload);
+  appEvents.on(
+    RealtimeEvent.OrderStatusChanged,
+    (payload: { tableSessionId: string | null; counterSaleId?: string | null; orderId: string; status: string }) => {
+      if (payload.tableSessionId) io.to(`table:${payload.tableSessionId}`).emit(RealtimeEvent.OrderStatusChanged, payload);
+      io.to("staff:pos").emit(RealtimeEvent.OrderStatusChanged, payload);
+      io.to("staff:serving").emit(RealtimeEvent.OrderStatusChanged, payload);
+      io.to("staff:front").emit(RealtimeEvent.OrderStatusChanged, payload);
+    },
+  );
+
+  /**
+   * 현장 거래 확정/수령/취소. 손님 브라우저에는 어떤 경우에도 보내지 않는다 —
+   * 쿠폰/거래 정보는 인증된 직원만 볼 수 있어야 한다(요구사항.md §8 권한).
+   */
+  appEvents.on(RealtimeEvent.CounterSaleRecorded, (payload: { counterSaleId: string; saleNo?: number }) => {
+    io.to("staff:front").emit(RealtimeEvent.CounterSaleRecorded, payload);
+    io.to("staff:pos").emit(RealtimeEvent.CounterSaleRecorded, payload);
   });
 
   appEvents.on(RealtimeEvent.TableOpened, (payload: { tableId: string; tableSessionId: string }) => {
@@ -136,8 +149,8 @@ export function attachSocket(httpServer: HttpServer) {
     io.to("staff:front").emit(RealtimeEvent.TableClosed, payload);
   });
 
-  appEvents.on(RealtimeEvent.PaymentRecorded, (payload: { tableSessionId: string }) => {
-    io.to(`table:${payload.tableSessionId}`).emit(RealtimeEvent.PaymentRecorded, payload);
+  appEvents.on(RealtimeEvent.PaymentRecorded, (payload: { tableSessionId: string | null }) => {
+    if (payload.tableSessionId) io.to(`table:${payload.tableSessionId}`).emit(RealtimeEvent.PaymentRecorded, payload);
     io.to("staff:front").emit(RealtimeEvent.PaymentRecorded, payload);
   });
 

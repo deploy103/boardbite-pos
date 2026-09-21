@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/api.js";
 import { useStaffMe } from "../lib/useStaffMe.js";
 import ConnectionBanner from "../components/ConnectionBanner.js";
@@ -17,10 +17,15 @@ import PaymentsPanel from "./admin/PaymentsPanel.js";
 import RevenuePanel from "./admin/RevenuePanel.js";
 import SettingsPanel from "./admin/SettingsPanel.js";
 import BackupsPanel from "./admin/BackupsPanel.js";
+import MenuPanel from "./admin/MenuPanel.js";
+import CouponsPanel from "./admin/CouponsPanel.js";
+import CounterSalesList from "./front/CounterSalesList.js";
 
 type Tab =
   | "tables"
   | "menu"
+  | "coupons"
+  | "counter-sales"
   | "users"
   | "game-plans"
   | "logs"
@@ -46,6 +51,8 @@ export default function AdminHome() {
           [
             "tables",
             "menu",
+            "coupons",
+            "counter-sales",
             "users",
             "game-plans",
             "logs",
@@ -60,6 +67,8 @@ export default function AdminHome() {
           <button key={t} className="btn-secondary" onClick={() => setTab(t)} disabled={tab === t}>
             {t === "tables" && "테이블"}
             {t === "menu" && "메뉴"}
+            {t === "coupons" && "쿠폰"}
+            {t === "counter-sales" && "현장 거래"}
             {t === "users" && "사용자"}
             {t === "game-plans" && "이용권"}
             {t === "logs" && "감사 로그"}
@@ -74,6 +83,8 @@ export default function AdminHome() {
       </nav>
       {tab === "tables" && <TablesPanel mfaEnabled={me.mfaEnabled} />}
       {tab === "menu" && <MenuPanel />}
+      {tab === "coupons" && <CouponsPanel />}
+      {tab === "counter-sales" && <CounterSalesList role={me.role} mfaEnabled={me.mfaEnabled} />}
       {tab === "users" && <UsersPanel mfaEnabled={me.mfaEnabled} />}
       {tab === "game-plans" && <GamePlansPanel />}
       {tab === "logs" && <LogsPanel />}
@@ -90,6 +101,8 @@ export default function AdminHome() {
 interface AdminTable {
   id: string;
   number: number;
+  name: string | null;
+  sortOrder: number;
   status: "DISABLED" | "AVAILABLE" | "OPEN" | "SETTLING";
   publicSlug: string;
   ordersLocked: boolean;
@@ -106,6 +119,9 @@ function TablesPanel({ mfaEnabled }: { mfaEnabled: boolean }) {
   const [tables, setTables] = useState<AdminTable[]>([]);
   const [number, setNumber] = useState("");
   const [forceTarget, setForceTarget] = useState<{ table: AdminTable; blockers: CloseBlocker[] } | null>(null);
+  const [renaming, setRenaming] = useState<string | null>(null);
+  const nameDraft = useRef("");
+  const sortDraft = useRef("0");
   const { error, setError, wrap } = useErrorBanner();
   const { pending, setPending, guard } = useStepUpGuard();
 
@@ -121,6 +137,17 @@ function TablesPanel({ mfaEnabled }: { mfaEnabled: boolean }) {
     setNumber("");
     await refresh();
   });
+
+  /** 표시 이름과 정렬 순서 저장. 테이블 번호는 손님 QR/이력과 묶여 있으므로 여기서 바꾸지 않는다. */
+  const saveTableInfo = (t: AdminTable) =>
+    wrap(async () => {
+      await api.patch(`/api/staff/admin/tables/${t.id}`, {
+        name: nameDraft.current.trim(),
+        sortOrder: Number(sortDraft.current) || 0,
+      });
+      setRenaming(null);
+      await refresh();
+    })();
 
   const rotate = (id: string) =>
     wrap(async () => {
@@ -184,10 +211,40 @@ function TablesPanel({ mfaEnabled }: { mfaEnabled: boolean }) {
       {tables.map((t) => (
         <div key={t.id} className="list-row">
           <div>
-            <strong>{t.number}번</strong> · <span className="badge">{t.status}</span>{" "}
+            <strong>
+              {t.number}번{t.name ? ` · ${t.name}` : ""}
+            </strong>{" "}
+            <span className="badge">{t.status}</span>{" "}
             {t.ordersLocked && <span className="badge badge--warn">주문 잠금</span>}{" "}
             {t.paymentsLocked && <span className="badge badge--warn">결제 잠금</span>}
             <div className="text-muted">주문 URL: /t/{t.publicSlug}</div>
+            {renaming === t.id && (
+              <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+                <input
+                  className="field"
+                  style={{ marginBottom: 0, maxWidth: 180 }}
+                  placeholder="표시 이름(선택)"
+                  defaultValue={t.name ?? ""}
+                  onChange={(e) => (nameDraft.current = e.target.value)}
+                  aria-label="테이블 표시 이름"
+                />
+                <input
+                  className="field"
+                  style={{ marginBottom: 0, width: 100 }}
+                  type="number"
+                  defaultValue={t.sortOrder}
+                  onChange={(e) => (sortDraft.current = e.target.value)}
+                  aria-label="테이블 정렬 순서"
+                />
+                <button
+                  className="btn-primary"
+                  style={{ width: "auto", padding: "0 16px" }}
+                  onClick={() => saveTableInfo(t)}
+                >
+                  저장
+                </button>
+              </div>
+            )}
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <button className="btn-secondary" onClick={() => toggleOrdersLocked(t)}>
@@ -195,6 +252,16 @@ function TablesPanel({ mfaEnabled }: { mfaEnabled: boolean }) {
             </button>
             <button className="btn-secondary" onClick={() => togglePaymentsLocked(t)}>
               {t.paymentsLocked ? "결제 잠금 해제" : "결제 잠금"}
+            </button>
+            <button
+              className="btn-secondary"
+              onClick={() => {
+                nameDraft.current = t.name ?? "";
+                sortDraft.current = String(t.sortOrder);
+                setRenaming(renaming === t.id ? null : t.id);
+              }}
+            >
+              {renaming === t.id ? "편집 닫기" : "이름/순서"}
             </button>
             <button className="btn-secondary" onClick={() => rotate(t.id)}>
               QR 주소 재발급
@@ -246,102 +313,6 @@ function TablesPanel({ mfaEnabled }: { mfaEnabled: boolean }) {
           onCancel={() => setPending(null)}
         />
       )}
-    </section>
-  );
-}
-
-function MenuPanel() {
-  const [categories, setCategories] = useState<any[]>([]);
-  const [catName, setCatName] = useState("");
-  const [itemForm, setItemForm] = useState({ categoryId: "", name: "", price: "" });
-  const { error, setError, wrap } = useErrorBanner();
-
-  const refresh = () => api.get("/api/staff/admin/menu/categories").then((d) => setCategories(d.categories));
-  useEffect(() => {
-    refresh().catch(() => setError("메뉴를 불러오지 못했어요."));
-  }, []);
-
-  const addCategory = wrap(async () => {
-    if (!catName) return;
-    await api.post("/api/staff/admin/menu/categories", { name: catName });
-    setCatName("");
-    await refresh();
-  });
-
-  const addItem = wrap(async () => {
-    if (!itemForm.categoryId || !itemForm.name || !itemForm.price) return;
-    await api.post("/api/staff/admin/menu/items", {
-      categoryId: itemForm.categoryId,
-      name: itemForm.name,
-      price: Number(itemForm.price),
-    });
-    setItemForm({ categoryId: itemForm.categoryId, name: "", price: "" });
-    await refresh();
-  });
-
-  const toggleSoldOut = (id: string, current: boolean) =>
-    wrap(async () => {
-      await api.patch(`/api/staff/admin/menu/items/${id}`, { isSoldOut: !current });
-      await refresh();
-    })();
-
-  return (
-    <section>
-      <h2>카테고리</h2>
-      <div style={{ display: "flex", gap: 8 }}>
-        <input className="field" placeholder="카테고리명" value={catName} onChange={(e) => setCatName(e.target.value)} />
-        <button className="btn-primary" style={{ width: 160 }} onClick={addCategory}>
-          추가
-        </button>
-      </div>
-
-      <h2 style={{ marginTop: 24 }}>메뉴 추가</h2>
-      <select
-        className="field"
-        value={itemForm.categoryId}
-        onChange={(e) => setItemForm({ ...itemForm, categoryId: e.target.value })}
-      >
-        <option value="">카테고리 선택</option>
-        {categories.map((c) => (
-          <option key={c.id} value={c.id}>
-            {c.name}
-          </option>
-        ))}
-      </select>
-      <input
-        className="field"
-        placeholder="메뉴명"
-        value={itemForm.name}
-        onChange={(e) => setItemForm({ ...itemForm, name: e.target.value })}
-      />
-      <input
-        className="field"
-        placeholder="가격(원)"
-        type="number"
-        value={itemForm.price}
-        onChange={(e) => setItemForm({ ...itemForm, price: e.target.value })}
-      />
-      <button className="btn-primary" onClick={addItem}>
-        메뉴 추가
-      </button>
-
-      {error && <p className="error-text">{error}</p>}
-
-      {categories.map((c) => (
-        <div key={c.id} style={{ marginTop: 24 }}>
-          <h3>{c.name}</h3>
-          {c.items.map((item: any) => (
-            <div key={item.id} className={`list-row ${item.isSoldOut ? "list-row--disabled" : ""}`}>
-              <div>
-                {item.name} · {item.price.toLocaleString()}원 {item.isSoldOut && <span className="badge badge--danger">품절</span>}
-              </div>
-              <button className="btn-secondary" onClick={() => toggleSoldOut(item.id, item.isSoldOut)}>
-                {item.isSoldOut ? "품절 해제" : "품절 처리"}
-              </button>
-            </div>
-          ))}
-        </div>
-      ))}
     </section>
   );
 }
@@ -559,19 +530,36 @@ function UsersPanel({ mfaEnabled }: { mfaEnabled: boolean }) {
   );
 }
 
+interface GamePlan {
+  id: string;
+  name: string;
+  minutes: number;
+  price: number;
+  isActive: boolean;
+}
+
+/**
+ * 보드게임 시간제 이용권(기존 기능). 새 게임 판매는 일반 메뉴로 하지만,
+ * 진행 중인 자리와 과거 이력이 있으므로 여기서 계속 관리할 수 있어야 한다 —
+ * 값을 고치거나 더 이상 팔지 않도록 숨기는 일을 DB를 직접 건드리지 않고 화면에서 끝낸다.
+ * 이용권 행은 과거 사용 이력(TableGameUsage)이 참조하므로 삭제하지 않고 '판매 중지'로만 내린다.
+ */
 function GamePlansPanel() {
-  const [plans, setPlans] = useState<any[]>([]);
+  const [plans, setPlans] = useState<GamePlan[]>([]);
   const [form, setForm] = useState({ name: "", minutes: "", price: "" });
+  const [editing, setEditing] = useState<Record<string, { name: string; minutes: string; price: string }>>({});
   const { error, setError, wrap } = useErrorBanner();
 
   const refresh = () => api.get("/api/staff/admin/game-plans").then((d) => setPlans(d.plans));
   useEffect(() => {
     refresh().catch(() => setError("이용권 목록을 불러오지 못했어요."));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const create = wrap(async () => {
+    if (!form.name.trim() || !form.minutes || form.price === "") return;
     await api.post("/api/staff/admin/game-plans", {
-      name: form.name,
+      name: form.name.trim(),
       minutes: Number(form.minutes),
       price: Number(form.price),
     });
@@ -579,14 +567,31 @@ function GamePlansPanel() {
     await refresh();
   });
 
+  const patch = (id: string, data: Record<string, unknown>) =>
+    wrap(async () => {
+      await api.patch(`/api/staff/admin/game-plans/${id}`, data);
+      setEditing((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      await refresh();
+    })();
+
   return (
     <section>
       <h2>이용권 추가</h2>
+      <p className="text-muted" style={{ fontSize: "0.85rem" }}>
+        시간제 이용권은 테이블에 시간을 붙여 파는 기존 방식입니다. 보드게임 판수(1판/2판/3판)처럼 횟수로 파는 상품은
+        <strong> 메뉴 탭에서 FRONT 전용 일반 메뉴</strong>로 등록해 현장 결제로 판매하세요. 한 자리에서 두 방식을
+        같이 쓰면 같은 이용이 두 번 청구될 수 있으니 하나만 쓰는 걸 권합니다.
+      </p>
       <input className="field" placeholder="이름(예: 20분)" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
       <input
         className="field"
         placeholder="분"
         type="number"
+        min={1}
         value={form.minutes}
         onChange={(e) => setForm({ ...form, minutes: e.target.value })}
       />
@@ -594,6 +599,7 @@ function GamePlansPanel() {
         className="field"
         placeholder="가격(원)"
         type="number"
+        min={0}
         value={form.price}
         onChange={(e) => setForm({ ...form, price: e.target.value })}
       />
@@ -601,13 +607,96 @@ function GamePlansPanel() {
         추가
       </button>
       {error && <p className="error-text">{error}</p>}
-      {plans.map((p) => (
-        <div key={p.id} className="list-row">
-          <div>
-            {p.name} · {p.minutes}분 · {p.price.toLocaleString()}원
+
+      {plans.length === 0 && <p className="text-muted">등록된 이용권이 없어요.</p>}
+      {plans.map((p) => {
+        const draft = editing[p.id];
+        return (
+          <div key={p.id} className={`list-row ${p.isActive ? "" : "list-row--disabled"}`} style={{ flexDirection: "column", alignItems: "stretch" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+              <div>
+                <strong>{p.name}</strong> · {p.minutes}분 · {p.price.toLocaleString()}원{" "}
+                {!p.isActive && <span className="badge badge--warn">판매 중지</span>}
+              </div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <button
+                  className="btn-secondary"
+                  onClick={() =>
+                    setEditing((prev) =>
+                      draft
+                        ? (() => {
+                            const next = { ...prev };
+                            delete next[p.id];
+                            return next;
+                          })()
+                        : { ...prev, [p.id]: { name: p.name, minutes: String(p.minutes), price: String(p.price) } },
+                    )
+                  }
+                >
+                  {draft ? "닫기" : "편집"}
+                </button>
+                <button className={p.isActive ? "btn-danger-outline" : "btn-secondary"} onClick={() => patch(p.id, { isActive: !p.isActive })}>
+                  {p.isActive ? "판매 중지" : "판매 재개"}
+                </button>
+              </div>
+            </div>
+
+            {draft && (
+              <div className="admin-menu-editor">
+                <div className="field-label-group">
+                  <label className="field-label" htmlFor={`plan-name-${p.id}`}>
+                    이름
+                  </label>
+                  <input
+                    id={`plan-name-${p.id}`}
+                    className="field"
+                    value={draft.name}
+                    onChange={(e) => setEditing((prev) => ({ ...prev, [p.id]: { ...draft, name: e.target.value } }))}
+                  />
+                </div>
+                <div className="field-label-group">
+                  <label className="field-label" htmlFor={`plan-min-${p.id}`}>
+                    분
+                  </label>
+                  <input
+                    id={`plan-min-${p.id}`}
+                    className="field"
+                    type="number"
+                    min={1}
+                    value={draft.minutes}
+                    onChange={(e) => setEditing((prev) => ({ ...prev, [p.id]: { ...draft, minutes: e.target.value } }))}
+                  />
+                </div>
+                <div className="field-label-group">
+                  <label className="field-label" htmlFor={`plan-price-${p.id}`}>
+                    가격(원)
+                  </label>
+                  <input
+                    id={`plan-price-${p.id}`}
+                    className="field"
+                    type="number"
+                    min={0}
+                    value={draft.price}
+                    onChange={(e) => setEditing((prev) => ({ ...prev, [p.id]: { ...draft, price: e.target.value } }))}
+                  />
+                </div>
+                <p className="text-muted" style={{ fontSize: "0.85rem" }}>
+                  값을 고쳐도 <strong>이미 사용 중인 자리와 과거 이력은 그대로</strong>입니다(사용 시점의 분/가격이 따로 기록돼 있어요).
+                  새로 붙이는 이용권부터 바뀐 값이 적용됩니다.
+                </p>
+                <button
+                  className="btn-primary"
+                  onClick={() =>
+                    patch(p.id, { name: draft.name, minutes: Number(draft.minutes), price: Number(draft.price) })
+                  }
+                >
+                  저장
+                </button>
+              </div>
+            )}
           </div>
-        </div>
-      ))}
+        );
+      })}
     </section>
   );
 }

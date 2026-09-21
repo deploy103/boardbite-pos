@@ -2,7 +2,8 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "../prisma.js";
 import { recordAuditLogBestEffort } from "./auditLog.js";
 import { appEvents, RealtimeEvent } from "../realtime.js";
-import { computeBill, computeItemPaymentStatus } from "./billing.js";
+import { COUPON_DISCOUNT_METHOD, computeBill, computeItemPaymentStatus } from "./billing.js";
+import { cancelTableCouponRedemption } from "./tableCoupon.js";
 import { maybeAutoSettleTableSession, type AutoSettleOutcome } from "./tableSession.js";
 
 export class PaymentValidationError extends Error {
@@ -328,11 +329,21 @@ export async function voidPayment(paymentId: string, staffId: string, reason: st
   if (!reason || reason.trim().length === 0) {
     throw new PaymentValidationError("취소 사유를 입력해 주세요.");
   }
+  // 현장 거래는 "거래 전체 취소/환불" 한 경로로만 되돌린다(요구사항.md §5.1, §6.4).
+  // 결제 행 하나만 개별 취소하면 쿠폰 제공 실적 취소와 KDS 작업 취소가 함께 처리되지 않아
+  // 원장이 어긋난다 — 두 경로가 같은 돈을 두 번 되돌리는 것도 막는다.
+  if (!original.tableSessionId || !original.tableSession) {
+    throw new PaymentValidationError(
+      "현장 거래는 결제 건별로 취소할 수 없어요. 거래 상세에서 '거래 전체 취소'를 사용해 주세요.",
+      409,
+    );
+  }
+  const tableSessionId = original.tableSessionId;
 
   const kind = original.tableSession.status === "CLOSED" || original.tableSession.status === "EXPIRED" ? "REFUND" : "VOID";
   // 역방향 레코드도 세션 범위 키를 쓴다. 원본 결제 id가 이미 전역 유일하므로 중복 취소는
   // UNIQUE 제약만으로도 막히지만, 키 형식을 일관되게 유지해 감사/조회를 단순화한다.
-  const idempotencyKey = scopePaymentIdempotencyKey(original.tableSessionId, `${kind.toLowerCase()}:${original.id}`);
+  const idempotencyKey = scopePaymentIdempotencyKey(tableSessionId, `${kind.toLowerCase()}:${original.id}`);
 
   const reversal = await prisma.$transaction(async (tx) => {
     const alreadyReversed = await tx.payment.findUnique({ where: { idempotencyKey }, include: { allocations: true } });
@@ -347,7 +358,7 @@ export async function voidPayment(paymentId: string, staffId: string, reason: st
 
     return tx.payment.create({
       data: {
-        tableSessionId: original.tableSessionId,
+        tableSessionId,
         kind,
         method: original.method,
         amount: original.amount,
@@ -363,21 +374,27 @@ export async function voidPayment(paymentId: string, staffId: string, reason: st
     });
   });
 
+  // 쿠폰 할인을 되돌렸다면 제공 실적도 함께 취소한다(요구사항.md §6.4).
+  // 쿠폰 자체는 사용 완료로 유지된다 — 이미 제공한 서비스를 다시 쓰는 사고를 막기 위한 기본 정책이다.
+  if (original.kind === "DISCOUNT" && original.method === COUPON_DISCOUNT_METHOD) {
+    await cancelTableCouponRedemption(tableSessionId, original.reason);
+  }
+
   await recordAuditLogBestEffort({
     actorType: "STAFF",
     actorId: staffId,
     action: "PAYMENT_VOIDED",
     targetType: "Payment",
     targetId: original.id,
-    metadata: { reversalId: reversal.id, reason, kind },
+    metadata: { reversalId: reversal.id, reason, kind, couponReverted: original.method === COUPON_DISCOUNT_METHOD },
   });
 
-  appEvents.emit(RealtimeEvent.PaymentRecorded, { tableSessionId: original.tableSessionId, paymentId: reversal.id });
+  appEvents.emit(RealtimeEvent.PaymentRecorded, { tableSessionId, paymentId: reversal.id });
 
   // 취소로 미수금이 다시 생길 수 있으므로(예: 완납 후 취소) 상태를 재평가한다.
-  await maybeAutoSettleTableSession(original.tableSessionId);
+  await maybeAutoSettleTableSession(tableSessionId);
 
-  const bill = await computeBill(original.tableSessionId);
+  const bill = await computeBill(tableSessionId);
   return { payment: reversal, bill, settlement: "NO_CHANGE" };
 }
 
@@ -448,6 +465,6 @@ export async function classifyReversal(paymentId: string): Promise<"VOID" | "REF
     where: { id: paymentId },
     include: { tableSession: { select: { status: true } } },
   });
-  if (!payment) return null;
+  if (!payment || !payment.tableSession) return null;
   return payment.tableSession.status === "CLOSED" || payment.tableSession.status === "EXPIRED" ? "REFUND" : "VOID";
 }

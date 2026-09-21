@@ -155,6 +155,25 @@ export function createApp() {
   ]) {
     app.use(path, sensitiveAuthLimiter);
   }
+  /**
+   * 쿠폰 번호 조회 제한(요구사항.md §8). 3자리 번호는 추측 가능하므로 인증된 직원이라도
+   * 전수조사를 할 수 없어야 한다. 로그인 세션이 있으면 직원 단위로, 없으면 IP 단위로 센다
+   * (미인증 요청은 어차피 staffGate에서 401이지만 limiter가 먼저 트래픽을 끊는다).
+   */
+  const couponLookupLimiter = rateLimit({
+    windowMs: 5 * 60 * 1000,
+    limit: env.COUPON_LOOKUP_RATE_LIMIT_PER_5MIN,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => `coupon:${req.session?.staffUserId ?? req.ip}`,
+    message: { error: "쿠폰 조회를 너무 많이 시도했어요. 잠시 후 다시 시도해 주세요." },
+  });
+  // 쿠폰 번호로 조회하는 경로는 전부 같은 제한을 받는다.
+  // 현장 결제(GET /counter/coupons/:code)와 테이블 정산 미리보기(POST .../coupon/preview) 모두
+  // "이 번호가 살아있는가"를 알려주므로, 한쪽만 막으면 다른 쪽으로 전수조사를 할 수 있다.
+  app.use("/api/staff/front/counter/coupons", couponLookupLimiter);
+  app.use(/^\/api\/staff\/front\/table-sessions\/[^/]+\/coupon(\/preview)?$/, couponLookupLimiter);
+
   app.use("/api/customer", customerLimiter);
   app.post("/api/customer/join/:slug", joinLimiter);
 
