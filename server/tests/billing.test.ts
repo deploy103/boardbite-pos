@@ -12,6 +12,11 @@ async function createTableSession() {
   const { table } = await createTableWithMenu();
   const { username } = await createStaff("FRONT");
   const staff = await prisma.staffUser.findUniqueOrThrow({ where: { username } });
+  // Table.status도 함께 OPEN으로 맞춘다. 세션만 직접 만들고 테이블을 AVAILABLE로 두면
+  // "활성 세션이 있는 테이블은 OPEN/SETTLING" 전역 불변식(table-close.test.ts)을 깨뜨리는데,
+  // vitest는 파일 실행 순서를 보장하지 않아 그 위반이 실행마다 나타났다 사라졌다 했다.
+  // computeBill 자체는 테이블 상태를 보지 않으므로 이 검증의 의미는 그대로다.
+  await prisma.table.update({ where: { id: table.id }, data: { status: "OPEN" } });
   const session = await prisma.tableSession.create({
     data: { tableId: table.id, openedById: staff.id },
   });

@@ -17,6 +17,14 @@ interface ClosingPreview {
   rejectedOrderCount: number;
   unsettledTables: { tableId: string; tableNumber: number; status: string; remainingAmount: number }[];
   forceClosedSessions: { tableSessionId: string; tableNumber: number; closedAt: string | null; reason: string | null }[];
+  manualDiscount: number;
+  couponDiscount: number;
+  byChannel: { table: number; counter: number };
+  menuPaidRevenue: number;
+  unallocatedCharged: number;
+  counterSale: { completedCount: number; cancelledCount: number };
+  coupon: { redeemedCount: number; cancelledCount: number; amountCouponDiscount: number; itemCouponDiscount: number };
+  openCounterSales: { id: string; saleNo: number; pickupPending: boolean; refundNeeded: boolean; netChargedAmount: number }[];
 }
 
 interface Settlement {
@@ -114,6 +122,12 @@ export default function ClosingPanel({ mfaEnabled }: { mfaEnabled: boolean }) {
         <Cell label="총 주문 금액" value={won(preview.totalOrderAmount)} />
         <Cell label="실제 매출" value={won(preview.totalRevenue)} />
         <Cell label="총 할인" value={won(preview.totalDiscount)} />
+        <Cell label="일반 할인" value={won(preview.manualDiscount)} />
+        <Cell label="쿠폰 할인(무료 제공)" value={won(preview.couponDiscount)} />
+        <Cell label="테이블 매출" value={won(preview.byChannel.table)} />
+        <Cell label="현장 매출" value={won(preview.byChannel.counter)} />
+        <Cell label="현장 거래" value={`${preview.counterSale.completedCount}건 (취소 ${preview.counterSale.cancelledCount})`} />
+        <Cell label="쿠폰 사용" value={`${preview.coupon.redeemedCount}건 (취소 ${preview.coupon.cancelledCount})`} />
         <Cell label="결제 취소(VOID)" value={won(preview.totalVoid)} negative={preview.totalVoid > 0} />
         <Cell label="환불(REFUND)" value={won(preview.totalRefund)} negative={preview.totalRefund > 0} />
         <Cell label="취소 주문" value={`${preview.cancelledOrderCount}건`} />
@@ -127,6 +141,30 @@ export default function ClosingPanel({ mfaEnabled }: { mfaEnabled: boolean }) {
         <div key={m.method} className="list-row">
           <span>{m.method}</span>
           <strong>{won(m.amount)}</strong>
+        </div>
+      ))}
+
+      <div className="list-row" style={{ marginTop: 16 }}>
+        <span>검산 · 메뉴 배분 수납 + 미배분 수납(게임 이용료 등)</span>
+        <strong>
+          {won(preview.menuPaidRevenue)} + {won(preview.unallocatedCharged)} ={" "}
+          {won(preview.menuPaidRevenue + preview.unallocatedCharged)}
+        </strong>
+      </div>
+      <p className="text-muted" style={{ fontSize: "0.85rem" }}>
+        현금 예상액에는 쿠폰 할인이 포함되지 않습니다 — 쿠폰은 결제수단이 아니라 무료 제공이기 때문이에요.
+      </p>
+
+      <h3 style={{ marginTop: 24 }}>정리되지 않은 현장 거래</h3>
+      {preview.openCounterSales.length === 0 && <p className="text-muted">미수령·환불 필요 현장 거래가 없어요.</p>}
+      {preview.openCounterSales.map((s) => (
+        <div key={s.id} className="list-row">
+          <span>
+            #{String(s.saleNo).padStart(3, "0")}{" "}
+            {s.pickupPending && <span className="badge badge--warn">수령 대기</span>}{" "}
+            {s.refundNeeded && <span className="badge badge--danger">환불 필요</span>}
+          </span>
+          <strong>{won(s.netChargedAmount)}</strong>
         </div>
       ))}
 

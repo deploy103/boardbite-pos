@@ -41,6 +41,11 @@ model StaffUser {
   payments            Payment[]
   loginAttempts       LoginAttempt[]
   closingSettlements  ClosingSettlement[]
+
+  counterSalesCreated   CounterSale[]      @relation("CounterSaleCreatedBy")
+  counterSalesCancelled CounterSale[]      @relation("CounterSaleCancelledBy")
+  couponBatches         CouponBatch[]
+  couponRedemptions     CouponRedemption[]
 }
 
 model StaffSession {
@@ -79,7 +84,7 @@ model Table {
 }
 
 model TableSession {
-  id     String @id @default(cuid())
+  id      String @id @default(cuid())
   tableId String
   table   Table  @relation(fields: [tableId], references: [id])
   status  String @default("ACTIVE") // ACTIVE | PAID_PENDING_SERVICE | CLOSED | EXPIRED
@@ -101,8 +106,9 @@ model TableSession {
   gameUsages     TableGameUsage[]
   orders         Order[]
   payments       Payment[]
-  callRequests   StaffCallRequest[]
-  deviceSessions CustomerDeviceSession[]
+  callRequests      StaffCallRequest[]
+  deviceSessions    CustomerDeviceSession[]
+  couponRedemptions CouponRedemption[]
 
   @@index([tableId, status])
 }
@@ -148,9 +154,11 @@ model TableGameUsage {
 }
 
 model MenuCategory {
-  id        String @id @default(cuid())
+  id        String    @id @default(cuid())
   name      String
-  sortOrder Int    @default(0)
+  sortOrder Int       @default(0)
+  /// 논리 삭제(요구사항.md §4). 과거 주문/결제가 참조하는 행은 절대 물리 삭제하지 않는다.
+  deletedAt DateTime?
 
   items MenuItem[]
 }
@@ -165,25 +173,38 @@ model MenuItem {
   imageUrl      String?
   isActive      Boolean      @default(true)
   isSoldOut     Boolean      @default(false)
+  /// 조리가 필요한 상품인가. true면 KDS 조리 대기를 만들고 READY→수령/서빙 흐름을 탄다.
   needsCooking  Boolean      @default(true)
+  /// KDS 보드에 표시하는가. needsCooking=true면 반드시 true여야 한다(서버가 모순 조합을 거부).
+  /// 둘 다 false = "현장 즉시 제공" 상품(룰렛/보드게임/닌텐도 등) — 조리 대기를 만들지 않는다.
   showInKitchen Boolean      @default(true)
+  /// 판매 채널(요구사항.md §4): TABLE(테이블 전용) | FRONT(FRONT 전용) | BOTH(공통).
+  /// 기존 메뉴는 migration에서 BOTH로 채워 기존 테이블 판매 가능성을 그대로 유지한다.
+  channel       String       @default("BOTH")
   sortOrder     Int          @default(0)
   createdAt     DateTime     @default(now())
+  /// 논리 삭제. 새 판매 목록에서 사라지지만 과거 주문/결제/쿠폰 이력은 그대로 남는다.
+  deletedAt     DateTime?
 
-  optionGroups OptionGroup[]
-  orderItems   OrderItem[]
+  optionGroups  OptionGroup[]
+  orderItems    OrderItem[]
+  couponTargets CouponBatchTarget[]
 
   @@index([categoryId])
 }
 
 model OptionGroup {
-  id          String   @id @default(cuid())
+  id          String    @id @default(cuid())
   menuItemId  String
-  menuItem    MenuItem @relation(fields: [menuItemId], references: [id])
+  menuItem    MenuItem  @relation(fields: [menuItemId], references: [id])
   name        String
-  required    Boolean  @default(false)
-  multiSelect Boolean  @default(false)
-  sortOrder   Int      @default(0)
+  required    Boolean   @default(false)
+  multiSelect Boolean   @default(false)
+  sortOrder   Int       @default(0)
+  /// 비활성 그룹은 새 주문에서 표시/검증 대상이 아니다(필수 규칙도 적용하지 않는다).
+  isActive    Boolean   @default(true)
+  /// 논리 삭제. 삭제한 그룹의 필수 규칙은 새 주문에 적용하지 않는다(요구사항.md §3.1).
+  deletedAt   DateTime?
 
   choices OptionChoice[]
 
@@ -198,22 +219,28 @@ model OptionChoice {
   extraPrice Int         @default(0)
   isActive   Boolean     @default(true)
   sortOrder  Int         @default(0)
+  deletedAt  DateTime?
 
   orderItemOptions OrderItemOption[]
 
   @@index([groupId])
 }
 
+/// 주문 소유자는 TableSession(테이블 후불) 또는 CounterSale(FRONT 현장 결제) **둘 중 정확히 하나**다.
+/// 가짜 TableSession을 만들지 않기 위한 구조이며, migration SQL에 CHECK 제약으로 못박아 두었다
+/// (요구사항.md §8, §12.1 — "정확히 하나만 존재하도록 데이터/서버 제약을 설계한다").
 model Order {
-  id             String    @id @default(cuid())
-  tableSessionId String
-  tableSession   TableSession @relation(fields: [tableSessionId], references: [id])
-  status         String    @default("NEW") // NEW | ACCEPTED | PREPARING | READY | SERVED | REJECTED | CANCELLED
-  idempotencyKey String    @unique
+  id             String        @id @default(cuid())
+  tableSessionId String?
+  tableSession   TableSession? @relation(fields: [tableSessionId], references: [id])
+  counterSaleId  String?
+  counterSale    CounterSale?  @relation(fields: [counterSaleId], references: [id])
+  status         String        @default("NEW") // NEW | ACCEPTED | PREPARING | READY | SERVED | REJECTED | CANCELLED
+  idempotencyKey String        @unique
   note           String?
   rejectReason   String?
   cancelReason   String?
-  createdAt      DateTime  @default(now())
+  createdAt      DateTime      @default(now())
   acceptedAt     DateTime?
   preparingAt    DateTime?
   readyAt        DateTime?
@@ -223,6 +250,7 @@ model Order {
   items OrderItem[]
 
   @@index([tableSessionId, status])
+  @@index([counterSaleId])
 }
 
 model OrderItem {
@@ -234,6 +262,9 @@ model OrderItem {
   nameSnapshot String
   unitPrice    Int
   quantity     Int
+  /// 주문 시점의 제공 방식 스냅샷: KITCHEN(주방 조리/전달) | COUNTER(현장 즉시 제공).
+  /// 기존 행은 migration에서 KITCHEN으로 채운다 — 지금까지의 모든 주문이 주방을 거쳤다.
+  servingMode  String   @default("KITCHEN")
 
   options     OrderItemOption[]
   allocations PaymentAllocation[]
@@ -247,16 +278,22 @@ model OrderItemOption {
   orderItem          OrderItem    @relation(fields: [orderItemId], references: [id])
   optionChoiceId     String
   optionChoice       OptionChoice @relation(fields: [optionChoiceId], references: [id])
+  /// 주문 시점의 옵션 그룹명. 기존 행은 NULL로 남긴다 —
+  /// 지금의 그룹명을 과거 주문에 소급해 채우면 "그때 그 이름"을 지어내는 것이 되기 때문이다(요구사항.md §3.2).
+  groupNameSnapshot  String?
   nameSnapshot       String
   extraPriceSnapshot Int
 
   @@index([orderItemId])
 }
 
+/// Order와 동일하게 소유자는 TableSession 또는 CounterSale 중 정확히 하나다(migration의 CHECK 제약).
 model Payment {
-  id                String       @id @default(cuid())
-  tableSessionId    String
-  tableSession      TableSession @relation(fields: [tableSessionId], references: [id])
+  id                String        @id @default(cuid())
+  tableSessionId    String?
+  tableSession      TableSession? @relation(fields: [tableSessionId], references: [id])
+  counterSaleId     String?
+  counterSale       CounterSale?  @relation(fields: [counterSaleId], references: [id])
   kind              String // CHARGE | DISCOUNT | VOID | REFUND
   method            String // PaymentMethod.code (CASH | CARD | OTHER | ADMIN 정의 확장)
   amount            Int // 실제 정산액에 반영되는 금액(항상 양수, kind로 부호 의미 구분)
@@ -264,17 +301,19 @@ model Payment {
   changeAmount      Int? // 현금 결제 시 거스름돈 = tenderedAmount - amount
   payerLabel        String?
   reversedPaymentId String?
-  reversedPayment   Payment?     @relation("PaymentReversal", fields: [reversedPaymentId], references: [id])
-  reversals         Payment[]    @relation("PaymentReversal")
+  reversedPayment   Payment?      @relation("PaymentReversal", fields: [reversedPaymentId], references: [id])
+  reversals         Payment[]     @relation("PaymentReversal")
   reason            String?
-  idempotencyKey    String       @unique
+  idempotencyKey    String        @unique
   createdById       String
-  createdBy         StaffUser    @relation(fields: [createdById], references: [id])
-  createdAt         DateTime     @default(now())
+  createdBy         StaffUser     @relation(fields: [createdById], references: [id])
+  createdAt         DateTime      @default(now())
 
   allocations PaymentAllocation[]
 
   @@index([tableSessionId])
+  @@index([counterSaleId])
+  @@index([createdAt])
 }
 
 model PaymentMethod {
@@ -288,13 +327,13 @@ model PaymentMethod {
 
 model OperationSettings {
   // 싱글턴 행(id=1 고정). docs/ARCHITECTURE.md §9 "운영 설정" 참고.
-  id                    Int      @id @default(1)
-  orderingEnabled       Boolean  @default(true) // 전체 주문 기능 활성/비활성 (요구사항.md §19 "운영 모드")
-  paymentsEnabled       Boolean  @default(true) // 전체 결제 기능 활성/비활성
-  kdsWarnAfterSeconds   Int      @default(300) // KDS 카드 "임박" 배지 기준(초) — 기본 5분
-  kdsDangerAfterSeconds Int      @default(600) // KDS 카드 "지연" 배지 기준(초) — 기본 10분
-  servedRevertWindowSeconds Int  @default(180) // SERVING "서빙완료 되돌리기" 권한 없이 허용되는 시간(초) — 기본 3분
-  updatedAt             DateTime @updatedAt
+  id                        Int      @id @default(1)
+  orderingEnabled           Boolean  @default(true) // 전체 주문 기능 활성/비활성 (요구사항.md §19 "운영 모드")
+  paymentsEnabled           Boolean  @default(true) // 전체 결제 기능 활성/비활성
+  kdsWarnAfterSeconds       Int      @default(300) // KDS 카드 "임박" 배지 기준(초) — 기본 5분
+  kdsDangerAfterSeconds     Int      @default(600) // KDS 카드 "지연" 배지 기준(초) — 기본 10분
+  servedRevertWindowSeconds Int      @default(180) // SERVING "서빙완료 되돌리기" 권한 없이 허용되는 시간(초) — 기본 3분
+  updatedAt                 DateTime @updatedAt
 }
 
 model PaymentAllocation {
@@ -311,15 +350,15 @@ model PaymentAllocation {
 }
 
 model AuditLog {
-  id         String   @id @default(cuid())
-  actorType  String // STAFF | SYSTEM
-  actorId    String?
-  action     String // ORDER_CREATED, PAYMENT_VOIDED, ... (요구사항.md §14)
-  targetType String?
-  targetId   String?
-  metadata   String? // JSON string (민감정보 제외)
-  prevHash   String
-  hash       String
+  id          String   @id @default(cuid())
+  actorType   String // STAFF | SYSTEM
+  actorId     String?
+  action      String // ORDER_CREATED, PAYMENT_VOIDED, ... (요구사항.md §14)
+  targetType  String?
+  targetId    String?
+  metadata    String? // JSON string (민감정보 제외)
+  prevHash    String
+  hash        String
   // 1 = 레거시 SHA-256 체인, 2 = HMAC-SHA256(AUDIT_HMAC_KEY) 체인(요구사항2.md §5.2).
   // 기존 v1 레코드는 그대로 검증 가능하게 두고, 신규 레코드만 v2로 기록한다.
   hashVersion Int      @default(1)
@@ -331,7 +370,7 @@ model AuditLog {
 /// 영업 마감 정산 스냅샷(요구사항2.md §9.1). 한 번 기록되면 수정하지 않는다 —
 /// 정정이 필요하면 새 마감 레코드를 추가하고 note로 사유를 남긴다.
 model ClosingSettlement {
-  id             String   @id @default(cuid())
+  id             String    @id @default(cuid())
   openedAt       DateTime
   closedAt       DateTime
   expectedCash   Int
@@ -361,4 +400,139 @@ model StaffCallRequest {
   doneAt         DateTime?
 
   @@index([tableSessionId, status])
+}
+
+// ---------------------------------------------------------------------------
+// FRONT 현장 결제 (요구사항.md §5, §12.1)
+//
+// 테이블을 열지 않고 카운터에서 바로 수납을 기록하는 거래. 가짜 Table/TableSession을
+// 만들지 않기 위해 별도 헤더 모델을 두고, 금액 원본은 기존 Order/OrderItem/Payment
+// 원장을 그대로 재사용한다(중복 원장을 만들지 않는다).
+// ---------------------------------------------------------------------------
+model CounterSale {
+  id     String @id @default(cuid())
+  /// 사람이 읽고 부르는 주문번호. 전체에서 유일하며 재사용하지 않는다.
+  saleNo Int    @unique
+  status String @default("COMPLETED") // COMPLETED | CANCELLED
+
+  createdById String
+  createdBy   StaffUser @relation("CounterSaleCreatedBy", fields: [createdById], references: [id])
+  createdAt   DateTime  @default(now())
+
+  cancelledById String?
+  cancelledBy   StaffUser? @relation("CounterSaleCancelledBy", fields: [cancelledById], references: [id])
+  cancelledAt   DateTime?
+  cancelReason  String?
+
+  /// 확정 요청 멱등 키(직원 세션 범위로 좁혀 저장). 같은 키 + 같은 requestHash면 최초 결과를
+  /// 그대로 돌려주고, 같은 키 + 다른 본문이면 409로 거부한다(요구사항.md §6.3).
+  idempotencyKey String @unique
+  requestHash    String
+
+  orders      Order[]
+  payments    Payment[]
+  redemptions CouponRedemption[]
+
+  @@index([createdAt])
+  @@index([status])
+}
+
+// ---------------------------------------------------------------------------
+// 쿠폰 (요구사항.md §6)
+//
+// CouponBatch(혜택 정의) → Coupon(고유 번호 001~999 / 1회 사용 상태)
+//   → CouponRedemption(실제 할인액·거래·직원)
+//
+// 실제 할인 금액은 기존 Payment(kind=DISCOUNT, method=COUPON) 원장에 한 번만 기록하고,
+// CouponRedemption은 "어느 쿠폰이 어느 거래에 얼마로 쓰였는가"를 가리키는 연결 기록이다.
+// ---------------------------------------------------------------------------
+model CouponBatch {
+  id        String    @id @default(cuid())
+  /// AMOUNT(금액권) | ITEM(상품권)
+  type      String
+  name      String
+  memo      String?
+  /// AMOUNT권의 권면 금액(원). ITEM권은 null.
+  amount    Int?
+  /// 만료 시각(서버 시간 기준). null이면 무기한.
+  expiresAt DateTime?
+
+  issuedCount    Int
+  /// 배치 발급 멱등 키 — 같은 요청을 재전송해도 쿠폰이 두 번 발급되지 않는다.
+  idempotencyKey String @unique
+
+  createdById String
+  createdBy   StaffUser @relation(fields: [createdById], references: [id])
+  createdAt   DateTime  @default(now())
+
+  targets CouponBatchTarget[]
+  coupons Coupon[]
+
+  @@index([createdAt])
+}
+
+/// ITEM(상품권)이 무료로 제공하는 대상 메뉴. 동명 다른 메뉴에 적용되지 않도록 항상 ID로 검증한다.
+model CouponBatchTarget {
+  id           String      @id @default(cuid())
+  batchId      String
+  batch        CouponBatch @relation(fields: [batchId], references: [id])
+  menuItemId   String
+  menuItem     MenuItem    @relation(fields: [menuItemId], references: [id])
+  /// 발급 시점의 메뉴명. 대상 메뉴가 나중에 삭제/개명돼도 쿠폰에 적힌 혜택을 그대로 보여준다.
+  nameSnapshot String
+
+  @@unique([batchId, menuItemId])
+  @@index([menuItemId])
+}
+
+model Coupon {
+  id      String      @id @default(cuid())
+  batchId String
+  batch   CouponBatch @relation(fields: [batchId], references: [id])
+  /// 001~999 (3자리 0채움, 000 금지). 전체에서 유일하며 절대 재사용하지 않는다.
+  code    String      @unique
+  /// AVAILABLE | USED | CANCELLED. "유효기간 만료"는 batch.expiresAt으로 파생 판정한다.
+  status  String      @default("AVAILABLE")
+
+  usedAt      DateTime?
+  cancelledAt DateTime?
+  createdAt   DateTime  @default(now())
+
+  redemptions CouponRedemption[]
+
+  @@index([status])
+  @@index([batchId])
+}
+
+model CouponRedemption {
+  id       String @id @default(cuid())
+  /// 쿠폰 1장은 평생 1회만 사용된다 — UNIQUE로 이중 사용을 DB 레벨에서 못박는다.
+  couponId String @unique
+  coupon   Coupon @relation(fields: [couponId], references: [id])
+
+  /// 사용처는 FRONT 현장 거래 또는 테이블 후불 정산 중 **정확히 하나**다(migration의 CHECK 제약).
+  /// Order/Payment의 소유자 규칙과 같은 모양을 유지해 집계·환불 로직이 한 갈래로 흐르게 한다.
+  counterSaleId String?
+  counterSale   CounterSale? @relation(fields: [counterSaleId], references: [id])
+  tableSessionId String?
+  tableSession   TableSession? @relation(fields: [tableSessionId], references: [id])
+
+  /// 할인 전 거래 금액과 실제 적용된 할인액.
+  originalAmount    Int
+  discountAmount    Int
+  /// ITEM권이 적용된 주문 항목/메뉴(금액권은 null).
+  targetOrderItemId String?
+  targetMenuItemId  String?
+  /// 사용 시점의 혜택 스냅샷(JSON) — 배치가 나중에 어떻게 보이든 "그때 무엇을 줬는지"가 남는다.
+  benefitSnapshot   String
+
+  redeemedById String
+  redeemedBy   StaffUser @relation(fields: [redeemedById], references: [id])
+  redeemedAt   DateTime  @default(now())
+  /// 거래 취소/환불로 제공 실적이 취소된 시각. 쿠폰 자체는 사용 완료로 유지된다(요구사항.md §6.4).
+  cancelledAt  DateTime?
+
+  @@index([counterSaleId])
+  @@index([tableSessionId])
+  @@index([redeemedAt])
 }

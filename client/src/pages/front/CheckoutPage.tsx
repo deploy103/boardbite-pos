@@ -12,6 +12,7 @@ import ItemSplitPanel from "./ItemSplitPanel.js";
 import PaymentHistoryList from "./PaymentHistoryList.js";
 import VoidReasonModal from "./VoidReasonModal.js";
 import DiscountModal from "./DiscountModal.js";
+import TableCouponModal from "./TableCouponModal.js";
 import type { CheckoutData, PaymentMethod, PaymentRow, Settlement } from "./types.js";
 
 type Tab = "amount" | "dutch" | "items";
@@ -34,6 +35,7 @@ export default function CheckoutPage() {
   const [tab, setTab] = useState<Tab>("amount");
 
   const [discountOpen, setDiscountOpen] = useState(false);
+  const [couponOpen, setCouponOpen] = useState(false);
   const [discountSubmitting, setDiscountSubmitting] = useState(false);
   const [voidTarget, setVoidTarget] = useState<PaymentRow | null>(null);
   const [voidSubmitting, setVoidSubmitting] = useState(false);
@@ -208,9 +210,14 @@ export default function CheckoutPage() {
         </div>
       </div>
 
-      <button className="btn-secondary checkout-discount-btn" onClick={() => setDiscountOpen(true)}>
-        할인 적용
-      </button>
+      <div className="checkout-discount-row">
+        <button className="btn-secondary" onClick={() => setDiscountOpen(true)}>
+          할인 적용
+        </button>
+        <button className="btn-secondary" onClick={() => setCouponOpen(true)}>
+          쿠폰 사용
+        </button>
+      </div>
 
       <div className="seg-tabs" role="tablist">
         <button className="seg-tab" role="tab" aria-current={tab === "amount"} onClick={() => setTab("amount")}>
@@ -255,6 +262,17 @@ export default function CheckoutPage() {
       <h2 className="checkout-section-title">결제 내역</h2>
       <PaymentHistoryList payments={payments} onVoid={setVoidTarget} />
 
+      {couponOpen && (
+        <TableCouponModal
+          tableSessionId={tableSessionId}
+          onCancel={() => setCouponOpen(false)}
+          onApplied={() => {
+            setCouponOpen(false);
+            // 쿠폰으로 잔액이 0이 되면 서버가 자동 정산까지 처리하므로 전체를 다시 읽는다.
+            refresh().catch(() => setLoadError("정산 정보를 새로고침하지 못했어요."));
+          }}
+        />
+      )}
       {discountOpen && (
         <DiscountModal
           remainingAmount={Math.max(bill.remainingAmount, 0)}

@@ -9,7 +9,7 @@ import { recordAuditLog, verifyAuditLogChain, purgeAuditLogs } from "../services
 import { getSettings, updateSettings } from "../services/settings.js";
 import { computeRevenueSummary } from "../services/reporting.js";
 import { createBackup, listBackups, getBackupFilePath } from "../services/backup.js";
-import { toCsv } from "../services/csv.js";
+import { excelText, toCsv } from "../services/csv.js";
 import {
   adminResetPassword,
   updateStaffUser,
@@ -27,6 +27,36 @@ import {
   createClosingSettlement,
   ClosingError,
 } from "../services/closing.js";
+import {
+  MenuCatalogError,
+  assertCookingFlags,
+  deleteMenuCategory,
+  deleteMenuItem,
+  deleteOptionChoice,
+  deleteOptionGroup,
+  listMenuForAdmin,
+  updateMenuItem,
+  updateOptionChoice,
+  updateOptionGroup,
+} from "../services/menuCatalog.js";
+import {
+  COUPON_STATE_LABEL,
+  CouponError,
+  MAX_COUPON_NUMBER,
+  cancelCoupons,
+  couponNumberAvailability,
+  issueCouponBatch,
+  listCouponBatches,
+  listCoupons,
+  unusedItemCouponsForMenuItem,
+  type CouponState,
+} from "../services/coupon.js";
+import {
+  CounterSaleError,
+  cancelCounterSale,
+  getCounterSaleDetail,
+  listCounterSales,
+} from "../services/counterSale.js";
 
 export const adminRouter = Router();
 adminRouter.use(staffGate("ADMIN"));
@@ -35,6 +65,14 @@ adminRouter.use(staffGate("ADMIN"));
 function sendDomainError(res: import("express").Response, err: unknown): boolean {
   if (err instanceof StaffAccountError || err instanceof TableSessionError || err instanceof ClosingError) {
     res.status(err.status).json({ error: err.message });
+    return true;
+  }
+  if (err instanceof MenuCatalogError) {
+    res.status(err.status).json({ error: err.message });
+    return true;
+  }
+  if (err instanceof CouponError || err instanceof CounterSaleError) {
+    res.status(err.status).json({ error: err.message, code: err.code });
     return true;
   }
   return false;
@@ -350,26 +388,58 @@ adminRouter.post("/tables/:id/rotate-slug", async (req, res) => {
   res.json({ table });
 });
 
-// ---------- 메뉴 관리 ----------
+// ---------- 메뉴 관리 (요구사항.md §3.1, §4) ----------
 
 adminRouter.get("/menu/categories", async (_req, res) => {
-  const categories = await prisma.menuCategory.findMany({
-    orderBy: { sortOrder: "asc" },
-    include: { items: { include: { optionGroups: { include: { choices: true } } } } },
-  });
-  res.json({ categories });
+  res.json({ categories: await listMenuForAdmin() });
 });
 
-const createCategorySchema = z.object({ name: z.string().min(1).max(50), sortOrder: z.number().int().optional() });
+const categorySchema = z.object({ name: z.string().min(1).max(50), sortOrder: z.number().int().optional() });
 
 adminRouter.post("/menu/categories", async (req, res) => {
-  const parsed = createCategorySchema.safeParse(req.body);
+  const parsed = categorySchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "입력값이 올바르지 않습니다." });
     return;
   }
   const category = await prisma.menuCategory.create({ data: parsed.data });
   res.status(201).json({ category });
+});
+
+adminRouter.patch("/menu/categories/:id", async (req, res) => {
+  const parsed = categorySchema.partial().safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "입력값이 올바르지 않습니다." });
+    return;
+  }
+  const existing = await prisma.menuCategory.findUnique({ where: { id: req.params.id } });
+  if (!existing || existing.deletedAt) {
+    res.status(404).json({ error: "존재하지 않는 카테고리예요." });
+    return;
+  }
+  const category = await prisma.menuCategory.update({ where: { id: req.params.id }, data: parsed.data });
+  res.json({ category });
+});
+
+/**
+ * 카테고리 삭제. 소속 메뉴가 남아 있으면 409로 막고 개수를 알려준다 —
+ * 연쇄 삭제로 메뉴를 함께 지우지 않는다(요구사항.md §4).
+ */
+adminRouter.delete("/menu/categories/:id", async (req, res) => {
+  try {
+    const category = await deleteMenuCategory(req.params.id);
+    await recordAuditLog({
+      actorType: "STAFF",
+      actorId: req.staff!.id,
+      action: "MENU_CATEGORY_DELETED",
+      targetType: "MenuCategory",
+      targetId: category.id,
+      metadata: { name: category.name },
+    });
+    res.json({ category });
+  } catch (err) {
+    if (!sendDomainError(res, err)) throw err;
+  }
 });
 
 const createItemSchema = z.object({
@@ -380,6 +450,7 @@ const createItemSchema = z.object({
   imageUrl: z.string().url().max(500).optional(),
   needsCooking: z.boolean().optional(),
   showInKitchen: z.boolean().optional(),
+  channel: z.enum(["TABLE", "FRONT", "BOTH"]).optional(),
   sortOrder: z.number().int().optional(),
 });
 
@@ -389,19 +460,31 @@ adminRouter.post("/menu/items", async (req, res) => {
     res.status(400).json({ error: "입력값이 올바르지 않습니다." });
     return;
   }
+  const category = await prisma.menuCategory.findUnique({ where: { id: parsed.data.categoryId } });
+  if (!category || category.deletedAt) {
+    res.status(404).json({ error: "존재하지 않는 카테고리예요." });
+    return;
+  }
+  try {
+    assertCookingFlags(parsed.data.needsCooking ?? true, parsed.data.showInKitchen ?? true);
+  } catch (err) {
+    if (!sendDomainError(res, err)) throw err;
+    return;
+  }
   const item = await prisma.menuItem.create({ data: parsed.data });
   res.status(201).json({ item });
 });
 
 const updateItemSchema = z.object({
+  categoryId: z.string().min(1).optional(),
   name: z.string().min(1).max(100).optional(),
-  description: z.string().max(500).optional(),
+  description: z.string().max(500).nullable().optional(),
   price: z.number().int().min(0).optional(),
-  imageUrl: z.string().url().max(500).optional(),
   isActive: z.boolean().optional(),
   isSoldOut: z.boolean().optional(),
   needsCooking: z.boolean().optional(),
   showInKitchen: z.boolean().optional(),
+  channel: z.enum(["TABLE", "FRONT", "BOTH"]).optional(),
   sortOrder: z.number().int().optional(),
 });
 
@@ -411,66 +494,366 @@ adminRouter.patch("/menu/items/:id", async (req, res) => {
     res.status(400).json({ error: "입력값이 올바르지 않습니다." });
     return;
   }
-  const before = await prisma.menuItem.findUnique({ where: { id: req.params.id } });
-  if (!before) {
-    res.status(404).json({ error: "존재하지 않는 메뉴입니다." });
-    return;
-  }
-  const item = await prisma.menuItem.update({ where: { id: req.params.id }, data: parsed.data });
+  try {
+    const { before, item } = await updateMenuItem(req.params.id, parsed.data);
 
-  if (parsed.data.price !== undefined && parsed.data.price !== before.price) {
-    await recordAuditLog({
-      actorType: "STAFF",
-      actorId: req.staff!.id,
-      action: "MENU_PRICE_CHANGED",
-      targetType: "MenuItem",
-      targetId: item.id,
-      metadata: { from: before.price, to: parsed.data.price },
-    });
+    if (parsed.data.price !== undefined && parsed.data.price !== before.price) {
+      await recordAuditLog({
+        actorType: "STAFF",
+        actorId: req.staff!.id,
+        action: "MENU_PRICE_CHANGED",
+        targetType: "MenuItem",
+        targetId: item.id,
+        metadata: { from: before.price, to: parsed.data.price },
+      });
+    }
+    if (parsed.data.isSoldOut !== undefined && parsed.data.isSoldOut !== before.isSoldOut) {
+      await recordAuditLog({
+        actorType: "STAFF",
+        actorId: req.staff!.id,
+        action: "MENU_SOLD_OUT",
+        targetType: "MenuItem",
+        targetId: item.id,
+        metadata: { isSoldOut: parsed.data.isSoldOut },
+      });
+    }
+    if (parsed.data.categoryId !== undefined && parsed.data.categoryId !== before.categoryId) {
+      await recordAuditLog({
+        actorType: "STAFF",
+        actorId: req.staff!.id,
+        action: "MENU_MOVED",
+        targetType: "MenuItem",
+        targetId: item.id,
+        metadata: { from: before.categoryId, to: parsed.data.categoryId },
+      });
+    }
+    res.json({ item });
+  } catch (err) {
+    if (!sendDomainError(res, err)) throw err;
   }
-  if (parsed.data.isSoldOut !== undefined && parsed.data.isSoldOut !== before.isSoldOut) {
-    await recordAuditLog({
-      actorType: "STAFF",
-      actorId: req.staff!.id,
-      action: "MENU_SOLD_OUT",
-      targetType: "MenuItem",
-      targetId: item.id,
-      metadata: { isSoldOut: parsed.data.isSoldOut },
-    });
-  }
-  res.json({ item });
 });
 
-const createOptionGroupSchema = z.object({
+/**
+ * 삭제 전 영향 확인. 이 메뉴를 대상으로 하는 **미사용 상품권**이 몇 장 남았는지 먼저 보여준다
+ * (요구사항.md §6.2 — 메뉴 삭제 전 미사용 상품권 영향을 함께 보여준다).
+ */
+adminRouter.get("/menu/items/:id/delete-preview", async (req, res) => {
+  const item = await prisma.menuItem.findUnique({ where: { id: req.params.id } });
+  if (!item || item.deletedAt) {
+    res.status(404).json({ error: "존재하지 않는 메뉴예요." });
+    return;
+  }
+  const [orderedCount, coupons] = await Promise.all([
+    prisma.orderItem.count({ where: { menuItemId: item.id } }),
+    unusedItemCouponsForMenuItem(item.id),
+  ]);
+  res.json({ item: { id: item.id, name: item.name }, orderedCount, coupons });
+});
+
+adminRouter.delete("/menu/items/:id", async (req, res) => {
+  try {
+    const item = await deleteMenuItem(req.params.id);
+    await recordAuditLog({
+      actorType: "STAFF",
+      actorId: req.staff!.id,
+      action: "MENU_ITEM_DELETED",
+      targetType: "MenuItem",
+      targetId: item.id,
+      metadata: { name: item.name, price: item.price },
+    });
+    res.json({ item });
+  } catch (err) {
+    if (!sendDomainError(res, err)) throw err;
+  }
+});
+
+// ---- 옵션 그룹 / 선택지 ----
+
+const optionGroupSchema = z.object({
   name: z.string().min(1).max(50),
   required: z.boolean().optional(),
   multiSelect: z.boolean().optional(),
+  sortOrder: z.number().int().optional(),
+  isActive: z.boolean().optional(),
 });
 
 adminRouter.post("/menu/items/:id/option-groups", async (req, res) => {
-  const parsed = createOptionGroupSchema.safeParse(req.body);
+  const parsed = optionGroupSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "입력값이 올바르지 않습니다." });
     return;
   }
-  const group = await prisma.optionGroup.create({ data: { menuItemId: req.params.id, ...parsed.data } });
+  const item = await prisma.menuItem.findUnique({ where: { id: req.params.id } });
+  if (!item || item.deletedAt) {
+    res.status(404).json({ error: "존재하지 않는 메뉴예요." });
+    return;
+  }
+  const group = await prisma.optionGroup.create({ data: { menuItemId: item.id, ...parsed.data } });
   res.status(201).json({ group });
 });
 
-// 의도적인 마이너스 가격 옵션 기능은 없다 — 음수 추가금은 곧 우회 할인이 되므로 막는다(요구사항2.md §3.3).
-const createOptionChoiceSchema = z.object({
-  name: z.string().min(1).max(50),
-  extraPrice: z.number().int().min(0).default(0),
-});
-
-adminRouter.post("/menu/option-groups/:id/choices", async (req, res) => {
-  const parsed = createOptionChoiceSchema.safeParse(req.body);
+adminRouter.patch("/menu/items/:menuItemId/option-groups/:groupId", async (req, res) => {
+  const parsed = optionGroupSchema.partial().safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "입력값이 올바르지 않습니다." });
     return;
   }
-  const choice = await prisma.optionChoice.create({ data: { groupId: req.params.id, ...parsed.data } });
+  try {
+    const group = await updateOptionGroup(req.params.groupId, req.params.menuItemId, parsed.data);
+    res.json({ group });
+  } catch (err) {
+    if (!sendDomainError(res, err)) throw err;
+  }
+});
+
+adminRouter.delete("/menu/items/:menuItemId/option-groups/:groupId", async (req, res) => {
+  try {
+    await deleteOptionGroup(req.params.groupId, req.params.menuItemId);
+    await recordAuditLog({
+      actorType: "STAFF",
+      actorId: req.staff!.id,
+      action: "MENU_OPTION_GROUP_DELETED",
+      targetType: "OptionGroup",
+      targetId: req.params.groupId,
+      metadata: { menuItemId: req.params.menuItemId },
+    });
+    res.json({ ok: true });
+  } catch (err) {
+    if (!sendDomainError(res, err)) throw err;
+  }
+});
+
+// 의도적인 마이너스 가격 옵션 기능은 없다 — 음수 추가금은 곧 우회 할인이 되므로 막는다(요구사항2.md §3.3).
+const optionChoiceSchema = z.object({
+  name: z.string().min(1).max(50),
+  extraPrice: z.number().int().min(0).default(0),
+  isActive: z.boolean().optional(),
+  sortOrder: z.number().int().optional(),
+});
+
+adminRouter.post("/menu/option-groups/:id/choices", async (req, res) => {
+  const parsed = optionChoiceSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "입력값이 올바르지 않습니다." });
+    return;
+  }
+  const group = await prisma.optionGroup.findUnique({ where: { id: req.params.id } });
+  if (!group || group.deletedAt) {
+    res.status(404).json({ error: "존재하지 않는 옵션 그룹이에요." });
+    return;
+  }
+  const choice = await prisma.optionChoice.create({ data: { groupId: group.id, ...parsed.data } });
   res.status(201).json({ choice });
+});
+
+adminRouter.patch("/menu/option-groups/:groupId/choices/:choiceId", async (req, res) => {
+  const parsed = optionChoiceSchema.partial().safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "입력값이 올바르지 않습니다." });
+    return;
+  }
+  try {
+    const choice = await updateOptionChoice(req.params.choiceId, req.params.groupId, parsed.data);
+    res.json({ choice });
+  } catch (err) {
+    if (!sendDomainError(res, err)) throw err;
+  }
+});
+
+adminRouter.delete("/menu/option-groups/:groupId/choices/:choiceId", async (req, res) => {
+  try {
+    await deleteOptionChoice(req.params.choiceId, req.params.groupId);
+    res.json({ ok: true });
+  } catch (err) {
+    if (!sendDomainError(res, err)) throw err;
+  }
+});
+
+// ---------- 쿠폰 (요구사항.md §6.1) ----------
+
+adminRouter.get("/coupons/availability", async (_req, res) => {
+  res.json({ availability: await couponNumberAvailability() });
+});
+
+adminRouter.get("/coupons/batches", async (_req, res) => {
+  res.json({ batches: await listCouponBatches() });
+});
+
+const couponListQuerySchema = z.object({
+  code: z.string().max(10).optional(),
+  type: z.enum(["AMOUNT", "ITEM"]).optional(),
+  batchId: z.string().optional(),
+  state: z.enum(["AVAILABLE", "USED", "EXPIRED", "CANCELLED"]).optional(),
+  limit: z.coerce.number().int().min(1).max(1000).optional(),
+});
+
+adminRouter.get("/coupons", async (req, res) => {
+  const parsed = couponListQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    res.status(400).json({ error: "검색 조건이 올바르지 않아요." });
+    return;
+  }
+  res.json({ coupons: await listCoupons(parsed.data) });
+});
+
+const issueBatchSchema = z
+  .object({
+    idempotencyKey: z.string().min(1).max(100),
+    type: z.enum(["AMOUNT", "ITEM"]),
+    name: z.string().min(1).max(100),
+    memo: z.string().max(300).optional(),
+    amount: z.number().int().positive().optional(),
+    targetMenuItemIds: z.array(z.string().min(1)).max(50).optional(),
+    quantity: z.number().int().min(1).max(MAX_COUPON_NUMBER),
+    expiresAt: z.string().max(40).nullable().optional(),
+  })
+  .refine((v) => (v.type === "AMOUNT" ? v.amount !== undefined : (v.targetMenuItemIds?.length ?? 0) > 0), {
+    message: "금액권은 금액을, 상품권은 대상 메뉴를 지정해야 해요.",
+  });
+
+adminRouter.post("/coupons/batches", async (req, res) => {
+  const parsed = issueBatchSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.issues[0]?.message ?? "입력값이 올바르지 않습니다." });
+    return;
+  }
+  try {
+    const { batch, reused } = await issueCouponBatch({ ...parsed.data, createdById: req.staff!.id });
+    if (!reused) {
+      await recordAuditLog({
+        actorType: "STAFF",
+        actorId: req.staff!.id,
+        action: "COUPON_BATCH_ISSUED",
+        targetType: "CouponBatch",
+        targetId: batch.id,
+        metadata: { type: batch.type, quantity: batch.issuedCount, amount: batch.amount },
+      });
+    }
+    res.status(reused ? 200 : 201).json({
+      batch: {
+        id: batch.id,
+        type: batch.type,
+        name: batch.name,
+        amount: batch.amount,
+        expiresAt: batch.expiresAt,
+        issuedCount: batch.issuedCount,
+        targets: batch.targets,
+        codes: batch.coupons.map((c) => c.code),
+      },
+      reused,
+    });
+  } catch (err) {
+    if (!sendDomainError(res, err)) throw err;
+  }
+});
+
+const cancelCouponsSchema = z.object({ couponIds: z.array(z.string().min(1)).min(1).max(1000) });
+
+/** 미사용 쿠폰 발급 취소. 사용 완료 쿠폰은 건드리지 않고 건너뛴 개수를 알려준다. */
+adminRouter.post("/coupons/cancel", async (req, res) => {
+  const parsed = cancelCouponsSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "취소할 쿠폰을 선택해 주세요." });
+    return;
+  }
+  const result = await cancelCoupons(parsed.data.couponIds, req.staff!.id);
+  await recordAuditLog({
+    actorType: "STAFF",
+    actorId: req.staff!.id,
+    action: "COUPON_CANCELLED",
+    targetType: "Coupon",
+    metadata: result,
+  });
+  res.json({ result });
+});
+
+/**
+ * 쿠폰 목록 CSV — 두 가지 형식을 제공한다(요구사항.md §6.1의 "안전한 문자열 포맷" + "가져오기 안내").
+ *
+ *   ?format=excel : 번호를 따옴표 안 탭 접두(`"\t001"`)로 내보낸다. Excel/Sheets가 텍스트로 읽어
+ *                   **앞자리 0이 그대로 유지**되고, 저장 후 다시 열어도 깨지지 않는다.
+ *                   사람이 바로 열어보는 용도.
+ *   기본(생략)    : 번호를 평문 `001`로 내보낸다. 다른 프로그램이 파싱하기 좋은 깨끗한 데이터.
+ *
+ * 어느 쪽이든 `="001"` 같은 수식 형태는 쓰지 않는다 — 그 자체가 수식이라 수식 주입 방어와 충돌한다.
+ * 번호는 서버가 만든 `[0-9]{3}` 값이라 주입 여지가 없고, 관리자가 자유 입력한 이름·메모 열은
+ * 두 형식 모두에서 neutralizeFormula가 그대로 중화한다.
+ */
+adminRouter.get("/export/coupons.csv", async (req, res) => {
+  const parsed = couponListQuerySchema.safeParse(req.query);
+  const coupons = await listCoupons(parsed.success ? parsed.data : {});
+  const forExcel = req.query.format === "excel";
+  const csv = toCsv(
+    ["번호", "번호(표시용)", "종류", "혜택", "상태", "배치", "발급일시", "만료", "사용 거래", "사용 직원", "사용 시각"],
+    coupons.map((c) => [
+      forExcel ? excelText(c.code) : c.code,
+      // 어느 형식으로 열든 번호를 확실히 읽을 수 있는 보조 열.
+      `쿠폰 ${c.code}`,
+      c.type === "AMOUNT" ? "금액권" : "상품권",
+      c.benefitLabel,
+      COUPON_STATE_LABEL[c.state as CouponState],
+      c.batchName,
+      new Date(c.issuedAt).toISOString(),
+      c.expiresAt ? new Date(c.expiresAt).toISOString() : "",
+      // 사용처: 현장 거래는 "#001", 테이블 정산은 "3번 테이블".
+      c.redemption
+        ? c.redemption.usedAt.kind === "COUNTER"
+          ? `현장 #${String(c.redemption.usedAt.saleNo).padStart(3, "0")}`
+          : `${c.redemption.usedAt.tableNumber ?? "?"}번 테이블`
+        : "",
+      c.redemption?.redeemedBy ?? "",
+      c.redemption ? new Date(c.redemption.redeemedAt).toISOString() : "",
+    ]),
+  );
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="coupons${forExcel ? "-excel" : ""}.csv"`);
+  res.send(csv);
+});
+
+// ---------- FRONT 현장 거래 (ADMIN 조회 / 전체 취소) ----------
+
+const counterListQuerySchema = z.object({
+  saleNo: z.coerce.number().int().positive().optional(),
+  status: z.enum(["COMPLETED", "CANCELLED"]).optional(),
+  onlyOpen: z.coerce.boolean().optional(),
+  limit: z.coerce.number().int().min(1).max(200).optional(),
+});
+
+adminRouter.get("/counter-sales", async (req, res) => {
+  const parsed = counterListQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    res.status(400).json({ error: "검색 조건이 올바르지 않아요." });
+    return;
+  }
+  res.json({ sales: await listCounterSales(parsed.data) });
+});
+
+adminRouter.get("/counter-sales/:id", async (req, res) => {
+  try {
+    res.json({ sale: await getCounterSaleDetail(req.params.id) });
+  } catch (err) {
+    if (!sendDomainError(res, err)) throw err;
+  }
+});
+
+const cancelSaleSchema = z.object({ reason: z.string().min(1).max(200) });
+
+/**
+ * 현장 거래 전체 취소/환불(요구사항.md §6.4).
+ * ADMIN + step-up + 사유를 요구하고, 원본을 지우지 않고 반대 원장을 추가한다.
+ */
+adminRouter.post("/counter-sales/:id/cancel", requireStepUp, async (req, res) => {
+  const parsed = cancelSaleSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "취소 사유를 입력해 주세요." });
+    return;
+  }
+  try {
+    const { sale } = await cancelCounterSale(req.params.id, req.staff!.id, parsed.data.reason);
+    res.json({ sale });
+  } catch (err) {
+    if (!sendDomainError(res, err)) throw err;
+  }
 });
 
 // ---------- 보드게임 이용권 관리 ----------
@@ -580,6 +963,8 @@ adminRouter.patch("/payment-methods/:id", async (req, res) => {
 const paymentSearchSchema = z.object({
   tableNumber: z.coerce.number().int().optional(),
   kind: z.enum(["CHARGE", "DISCOUNT", "VOID", "REFUND"]).optional(),
+  /** 테이블 정산 / FRONT 현장 결제를 나눠 보거나 합쳐서 볼 수 있다(요구사항.md §7). */
+  source: z.enum(["TABLE", "COUNTER"]).optional(),
   limit: z.coerce.number().int().min(1).max(500).optional(),
 });
 
@@ -594,6 +979,8 @@ adminRouter.get("/payments", async (req, res) => {
   if (parsed.data.tableNumber) {
     where.tableSession = { table: { number: parsed.data.tableNumber } };
   }
+  if (parsed.data.source === "TABLE") where.counterSaleId = null;
+  if (parsed.data.source === "COUNTER") where.tableSessionId = null;
   const payments = await prisma.payment.findMany({
     where,
     orderBy: { createdAt: "desc" },
@@ -602,6 +989,8 @@ adminRouter.get("/payments", async (req, res) => {
       allocations: true,
       createdBy: { select: { displayName: true } },
       tableSession: { include: { table: { select: { number: true } } } },
+      // 현장 거래 결제는 테이블이 없다 — 주문번호로 출처를 표시한다(테이블 0번으로 뭉개지 않는다).
+      counterSale: { select: { id: true, saleNo: true, status: true } },
     },
   });
   res.json({ payments });
@@ -739,23 +1128,42 @@ adminRouter.get("/export/revenue.csv", async (req, res) => {
   const until = parseDateQueryParam(req.query.until);
   const summary = await computeRevenueSummary(since, until);
 
+  // 같은 원장을 쓰는 화면(매출현황/마감)과 열 이름을 맞춘다.
+  // "주문액"과 "실제 수납"을 분리해, 정가 합계를 매출로 오해하지 않게 한다(요구사항.md §7).
   const rows: (string | number)[][] = [
-    ["총매출", summary.totalRevenue],
-    ["총할인", summary.totalDiscount],
+    ["총 주문액(정가)", summary.totalOrderAmount],
+    ["일반 할인", summary.manualDiscount],
+    ["쿠폰 할인(무료 제공)", summary.couponDiscount],
+    ["총 할인", summary.totalDiscount],
+    ["실제 수납(환불 전)", summary.totalCharged],
+    ["실제 환불", summary.totalRefunded],
+    ["순매출", summary.totalRevenue],
+    ["  ├ 테이블 순매출", summary.byChannel.table],
+    ["  └ 현장 순매출", summary.byChannel.counter],
+    ["메뉴 배분 수납", summary.menuPaidRevenue],
+    ["미배분 수납(게임 이용료/금액 기반 결제)", summary.unallocatedCharged],
+    ["검산(메뉴 배분 + 미배분)", summary.menuPaidRevenue + summary.unallocatedCharged],
+    ["현장 거래 완료 건수", summary.counterSale.completedCount],
+    ["현장 거래 취소 건수", summary.counterSale.cancelledCount],
+    ["쿠폰 사용 건수", summary.coupon.redeemedCount],
+    ["쿠폰 사용 취소 건수", summary.coupon.cancelledCount],
     ["취소 주문 수", summary.cancelledOrderCount],
     ["거부 주문 수", summary.rejectedOrderCount],
     [],
-    ["결제수단", "매출"],
+    ["결제수단", "순매출"],
     ...summary.byMethod.map((m) => [m.method, m.amount]),
     [],
-    ["메뉴", "판매수량", "매출"],
-    ...summary.menuSales.map((m) => [m.name, m.quantitySold, m.revenue]),
+    ["메뉴", "판매수량", "주문액(정가)", "실제 수납", "쿠폰 무료 제공"],
+    ...summary.menuSales.map((m) => [m.name, m.quantitySold, m.orderAmount, m.paidRevenue, m.couponFreeCount]),
     [],
-    ["테이블 번호", "매출"],
+    ["테이블 번호", "순매출"],
     ...summary.byTable.map((t) => [t.tableNumber, t.revenue]),
   ];
 
-  const csv = toCsv(["항목", "값1", "값2"], rows.map((r) => [r[0] ?? "", r[1] ?? "", r[2] ?? ""]));
+  const csv = toCsv(
+    ["항목", "값1", "값2", "값3", "값4"],
+    rows.map((r) => [r[0] ?? "", r[1] ?? "", r[2] ?? "", r[3] ?? "", r[4] ?? ""]),
+  );
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
   res.setHeader("Content-Disposition", `attachment; filename="revenue.csv"`);
   res.send(csv);
@@ -848,8 +1256,17 @@ adminRouter.get("/export/closing.csv", async (req, res) => {
     ["집계 시작", preview.openedAt.toISOString()],
     ["집계 종료", preview.closedAt.toISOString()],
     ["총 주문 금액", preview.totalOrderAmount],
-    ["실제 매출", preview.totalRevenue],
+    ["실제 매출(순매출)", preview.totalRevenue],
+    ["  ├ 테이블", preview.byChannel.table],
+    ["  └ 현장", preview.byChannel.counter],
     ["총 할인", preview.totalDiscount],
+    ["  ├ 일반 할인", preview.manualDiscount],
+    ["  └ 쿠폰 할인(무료 제공)", preview.couponDiscount],
+    ["메뉴 배분 수납", preview.menuPaidRevenue],
+    ["미배분 수납(게임 이용료 등)", preview.unallocatedCharged],
+    ["검산(메뉴 배분 + 미배분)", preview.menuPaidRevenue + preview.unallocatedCharged],
+    ["현장 거래 완료/취소", `${preview.counterSale.completedCount} / ${preview.counterSale.cancelledCount}`],
+    ["쿠폰 사용/사용취소", `${preview.coupon.redeemedCount} / ${preview.coupon.cancelledCount}`],
     ["VOID 합계", preview.totalVoid],
     ["REFUND 합계", preview.totalRefund],
     ["현금 예상액", preview.expectedCash],
@@ -864,6 +1281,13 @@ adminRouter.get("/export/closing.csv", async (req, res) => {
     [],
     ["강제 종료 테이블", "종료 시각", "사유"],
     ...preview.forceClosedSessions.map((s) => [s.tableNumber, s.closedAt?.toISOString() ?? "", s.reason ?? ""]),
+    [],
+    ["정리 안 된 현장 거래", "상태", "수납액"],
+    ...preview.openCounterSales.map((s) => [
+      `#${s.saleNo}`,
+      [s.pickupPending ? "미수령" : "", s.refundNeeded ? "환불 필요" : ""].filter(Boolean).join(" / "),
+      s.netChargedAmount,
+    ]),
   ];
 
   const csv = toCsv(["항목", "값1", "값2"], rows.map((r) => [r[0] ?? "", r[1] ?? "", r[2] ?? ""]));

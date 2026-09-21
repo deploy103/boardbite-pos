@@ -169,3 +169,91 @@ export async function createMenuItemWithOptions(price = 6000) {
 
   return { menuItem, requiredSingle, optionalMulti, small, large, cheese, inactive };
 }
+
+// ---- 아래는 FRONT 현장 결제 / 쿠폰 / 메뉴 수명주기 테스트를 위해 추가된 헬퍼 ----
+
+export const CLIENT_HEADER = ["X-BoardBite-Client", "1"] as const;
+
+/** 채널/제공 방식을 지정한 메뉴를 만든다. 옵션 없이 바로 팔 수 있는 단순 상품. */
+export async function createMenuItem(options: {
+  name?: string;
+  price: number;
+  channel?: "TABLE" | "FRONT" | "BOTH";
+  /** 둘 다 false면 "현장 즉시 제공" 상품이 된다(룰렛/보드게임 등). */
+  needsCooking?: boolean;
+  showInKitchen?: boolean;
+  categoryId?: string;
+}) {
+  const categoryId =
+    options.categoryId ?? (await prisma.menuCategory.create({ data: { name: unique("cat") } })).id;
+  return prisma.menuItem.create({
+    data: {
+      categoryId,
+      name: options.name ?? unique("menu"),
+      price: options.price,
+      channel: options.channel ?? "BOTH",
+      needsCooking: options.needsCooking ?? true,
+      showInKitchen: options.showInKitchen ?? true,
+    },
+  });
+}
+
+/** 현장 즉시 제공 상품(조리 없음, KDS 미표시). 룰렛/보드게임/닌텐도가 여기에 해당한다. */
+export function createCounterOnlyItem(name: string, price: number, categoryId?: string) {
+  return createMenuItem({ name, price, channel: "FRONT", needsCooking: false, showInKitchen: false, categoryId });
+}
+
+/** ADMIN 계정을 만들고 로그인한 agent를 돌려준다(쿠폰 발급/거래 취소 테스트용). */
+export async function loginAdmin() {
+  const { username, password } = await createStaff("ADMIN", "admin-test-pw-12345678");
+  const agent = await loginAgent(username, password);
+  return { agent, username, password };
+}
+
+export async function loginFront() {
+  const { username, password } = await createStaff("FRONT");
+  const agent = await loginAgent(username, password);
+  return { agent, username, password };
+}
+
+/** ADMIN API로 쿠폰 배치를 발급하고 발급된 번호 목록을 돌려준다. */
+export async function issueCoupons(
+  admin: Awaited<ReturnType<typeof loginAgent>>,
+  body: Record<string, unknown>,
+): Promise<{ status: number; codes: string[]; body: Record<string, unknown> }> {
+  const res = await admin
+    .post("/api/staff/admin/coupons/batches")
+    .set("X-BoardBite-Client", "1")
+    .send({ idempotencyKey: unique("batch"), ...body });
+  return { status: res.status, codes: res.body?.batch?.codes ?? [], body: res.body };
+}
+
+/** FRONT 현장 결제 확정 한 번. 기본은 현금 정확 수납이다. */
+export async function confirmCounterSale(
+  front: Awaited<ReturnType<typeof loginAgent>>,
+  body: Record<string, unknown>,
+) {
+  return front
+    .post("/api/staff/front/counter/confirm")
+    .set("X-BoardBite-Client", "1")
+    .send({ idempotencyKey: unique("counter"), ...body });
+}
+
+/**
+ * 테이블 세션을 "실제 종료와 같은 상태"로 닫는다.
+ *
+ * 세션만 CLOSED로 바꾸고 Table.status를 그대로 두면 table-close.test.ts의 전역 불변식
+ * ("활성 세션이 없는 테이블은 AVAILABLE/DISABLED")이 깨진다. vitest는 파일 실행 순서를 보장하지
+ * 않으므로 그 위반은 실행마다 나타났다 사라졌다 하는 간헐 실패로 나타난다 —
+ * 테스트에서 세션을 직접 닫아야 할 때는 반드시 이 헬퍼를 쓴다.
+ */
+export async function closeTableSessionDirect(tableSessionId: string) {
+  const session = await prisma.tableSession.findUniqueOrThrow({ where: { id: tableSessionId } });
+  await prisma.$transaction([
+    prisma.tableSession.update({
+      where: { id: tableSessionId },
+      data: { status: "CLOSED", closedAt: new Date(), closeReason: "TEST" },
+    }),
+    prisma.table.update({ where: { id: session.tableId }, data: { status: "AVAILABLE" } }),
+  ]);
+}

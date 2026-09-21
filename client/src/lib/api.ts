@@ -117,6 +117,8 @@ export const api = {
       headers: JSON_HEADERS,
       body: data !== undefined ? JSON.stringify(data) : undefined,
     }),
+  /** 논리 삭제 계열 API(메뉴/카테고리/옵션). 서버는 행을 지우지 않고 deletedAt만 채운다. */
+  del: (path: string) => send(path, { method: "DELETE", headers: JSON_HEADERS }),
 };
 
 /** 화면에 그대로 띄워도 안전한 문구로 바꾼다 — 내부 용어가 손님에게 새어 나가지 않게 한다(§10.3). */

@@ -1409,3 +1409,275 @@ h1 {
 .closing-cell__value--negative {
   color: var(--color-danger);
 }
+
+/* ---------------------------------------------------------------------------
+   FRONT 현장 결제 / 쿠폰 / 메뉴 관리 (요구사항.md §3~§6)
+
+   기존 토큰·컴포넌트(.field/.badge/.list-row/.sheet/.bill-card/.checkout-*)를 그대로 쓰고,
+   여기서는 새 화면의 배치만 정의한다. 전체 리디자인이 아니다.
+--------------------------------------------------------------------------- */
+
+.front-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-4);
+}
+
+.front-counter-cta {
+  width: auto;
+  padding: 0 var(--space-6);
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* 좌: 메뉴 / 우: 장바구니+결제. 좁은 화면에서는 한 열로 쌓인다. */
+.counter-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  gap: var(--space-6);
+  align-items: start;
+}
+
+@media (max-width: 760px) {
+  .counter-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.counter-menu-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+}
+
+.counter-menu-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  align-items: flex-start;
+  min-height: 88px;
+  padding: var(--space-3);
+  border: 1px solid var(--color-bg-alt);
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+  color: var(--color-text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.counter-menu-card:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.counter-menu-card__name {
+  font-weight: 600;
+  font-size: 0.95rem;
+  /* 긴 메뉴명도 잘리지 않게 줄바꿈한다. */
+  overflow-wrap: anywhere;
+}
+
+.counter-menu-card__price {
+  color: var(--color-point);
+  font-weight: 700;
+}
+
+.counter-menu-card__tags {
+  display: flex;
+  gap: var(--space-1);
+  flex-wrap: wrap;
+  margin-top: auto;
+}
+
+.counter-cart {
+  border: 1px solid var(--color-bg-alt);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
+}
+
+.counter-coupon-row {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.counter-coupon-row .field {
+  flex: 1;
+}
+
+.counter-coupon-applied {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--color-point);
+  border-radius: var(--radius-md);
+}
+
+.counter-coupon-applied .btn-secondary {
+  width: auto;
+  flex-shrink: 0;
+  padding: 0 var(--space-3);
+}
+
+.counter-coupon-targets {
+  margin-top: var(--space-3);
+}
+
+/* 거래 상세 — 주문/옵션/금액을 잘림 없이 보여준다. */
+.counter-sale-order {
+  border: 1px solid var(--color-bg-alt);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.counter-sale-order__head {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  align-items: center;
+  margin-bottom: var(--space-2);
+}
+
+.counter-sale-item {
+  padding: var(--space-1) 0;
+}
+
+.counter-sale-item__name {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.counter-sale-item__price {
+  font-weight: 500;
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
+.counter-sale-options {
+  margin: var(--space-1) 0 0;
+  padding-left: var(--space-4);
+  list-style: disc;
+  color: var(--color-text-muted);
+  font-size: 0.9rem;
+}
+
+.counter-sale-options li {
+  overflow-wrap: anywhere;
+}
+
+.counter-sale-options__price {
+  margin-left: var(--space-2);
+}
+
+/* KDS/서빙 카드의 옵션 표시 — 긴 옵션명도 잘리지 않는다(요구사항.md §3.3). */
+.kds-item {
+  padding: var(--space-1) 0;
+}
+
+.kds-item__name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.kds-item__options {
+  margin: 2px 0 0;
+  padding-left: var(--space-4);
+  list-style: disc;
+  color: var(--color-text-muted);
+  font-size: 0.9rem;
+}
+
+.kds-item__options li {
+  overflow-wrap: anywhere;
+}
+
+/* 관리자 메뉴/옵션 편집 */
+.admin-menu-editor {
+  margin-top: var(--space-3);
+  padding: var(--space-3);
+  background: var(--color-bg-alt);
+  border-radius: var(--radius-md);
+}
+
+.admin-option-group {
+  margin-top: var(--space-3);
+  padding: var(--space-3);
+  background: var(--color-bg);
+  border: 1px solid var(--color-bg-alt);
+  border-radius: var(--radius-md);
+}
+
+.admin-option-group .btn-secondary,
+.admin-option-group .btn-danger-outline {
+  width: auto;
+  padding: 0 var(--space-3);
+  margin: 0;
+}
+
+.admin-option-choice {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  flex-wrap: wrap;
+  padding: var(--space-2) 0;
+  border-top: 1px solid var(--color-bg-alt);
+}
+
+.admin-option-choice .field {
+  margin-bottom: 0;
+}
+
+/* 발급된 쿠폰 번호 — 인쇄해서 잘라 쓸 수 있게 크게 보여준다. */
+.coupon-code-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  justify-content: center;
+  margin-top: var(--space-3);
+}
+
+.coupon-code-chip {
+  display: inline-block;
+  min-width: 64px;
+  padding: var(--space-2) var(--space-3);
+  border: 1px dashed var(--color-text-muted);
+  border-radius: var(--radius-md);
+  font-size: 1.1rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+@media print {
+  /* 인쇄할 때는 번호 카드만 남긴다. */
+  .page > *:not(.join-code-card),
+  .join-code-card .btn-secondary,
+  .join-code-card .btn-primary {
+    display: none !important;
+  }
+
+  .coupon-code-chip {
+    page-break-inside: avoid;
+  }
+}
+
+/* 정산 화면의 할인/쿠폰 버튼 한 줄 배치 */
+.checkout-discount-row {
+  display: flex;
+  gap: var(--space-2);
+  margin: var(--space-3) 0;
+}
+
+.checkout-discount-row .btn-secondary {
+  margin: 0;
+}

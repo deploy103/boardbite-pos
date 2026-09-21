@@ -3,11 +3,29 @@ import { api } from "../../lib/api.js";
 import { useErrorBanner } from "./shared.js";
 
 type RevenueSummary = {
+  totalOrderAmount: number;
+  totalCharged: number;
+  totalRefunded: number;
+  /** 순매출 = 실제 수납 - 실제 환불. 쿠폰 액면가는 포함되지 않는다. */
   totalRevenue: number;
+  manualDiscount: number;
+  couponDiscount: number;
   totalDiscount: number;
   byMethod: { method: string; amount: number }[];
-  menuSales: { menuItemId: string; name: string; quantitySold: number; revenue: number }[];
+  byChannel: { table: number; counter: number };
+  menuSales: {
+    menuItemId: string;
+    name: string;
+    quantitySold: number;
+    orderAmount: number;
+    paidRevenue: number;
+    couponFreeCount: number;
+  }[];
+  menuPaidRevenue: number;
+  unallocatedCharged: number;
   byTable: { tableId: string; tableNumber: number; revenue: number }[];
+  coupon: { redeemedCount: number; cancelledCount: number; amountCouponDiscount: number; itemCouponDiscount: number };
+  counterSale: { completedCount: number; cancelledCount: number };
   cancelledOrderCount: number;
   rejectedOrderCount: number;
   openTableCount: number;
@@ -116,12 +134,44 @@ export default function RevenuePanel() {
         <>
           <div className="revenue-stats">
             <div className="revenue-stat">
-              <div className="revenue-stat__value">{summary.totalRevenue.toLocaleString()}원</div>
-              <div className="revenue-stat__label">총매출</div>
+              <div className="revenue-stat__value">{summary.totalOrderAmount.toLocaleString()}원</div>
+              <div className="revenue-stat__label">총 주문액(정가)</div>
             </div>
             <div className="revenue-stat">
-              <div className="revenue-stat__value">{summary.totalDiscount.toLocaleString()}원</div>
-              <div className="revenue-stat__label">총 할인액</div>
+              <div className="revenue-stat__value">{summary.manualDiscount.toLocaleString()}원</div>
+              <div className="revenue-stat__label">일반 할인</div>
+            </div>
+            <div className="revenue-stat">
+              <div className="revenue-stat__value">{summary.couponDiscount.toLocaleString()}원</div>
+              <div className="revenue-stat__label">쿠폰 할인(무료 제공)</div>
+            </div>
+            <div className="revenue-stat">
+              <div className="revenue-stat__value">{summary.totalCharged.toLocaleString()}원</div>
+              <div className="revenue-stat__label">실제 수납</div>
+            </div>
+            <div className="revenue-stat">
+              <div className="revenue-stat__value">{summary.totalRefunded.toLocaleString()}원</div>
+              <div className="revenue-stat__label">실제 환불</div>
+            </div>
+            <div className="revenue-stat">
+              <div className="revenue-stat__value">{summary.totalRevenue.toLocaleString()}원</div>
+              <div className="revenue-stat__label">순매출</div>
+            </div>
+            <div className="revenue-stat">
+              <div className="revenue-stat__value">{summary.byChannel.table.toLocaleString()}원</div>
+              <div className="revenue-stat__label">테이블 순매출</div>
+            </div>
+            <div className="revenue-stat">
+              <div className="revenue-stat__value">{summary.byChannel.counter.toLocaleString()}원</div>
+              <div className="revenue-stat__label">현장 순매출</div>
+            </div>
+            <div className="revenue-stat">
+              <div className="revenue-stat__value">{summary.coupon.redeemedCount}</div>
+              <div className="revenue-stat__label">쿠폰 사용(취소 {summary.coupon.cancelledCount})</div>
+            </div>
+            <div className="revenue-stat">
+              <div className="revenue-stat__value">{summary.counterSale.completedCount}</div>
+              <div className="revenue-stat__label">현장 거래(취소 {summary.counterSale.cancelledCount})</div>
             </div>
             <div className="revenue-stat">
               <div className="revenue-stat__value">{summary.openTableCount}</div>
@@ -143,7 +193,11 @@ export default function RevenuePanel() {
             <Bar key={m.method} label={m.method} value={m.amount} max={methodMax} valueLabel={`${m.amount.toLocaleString()}원`} />
           ))}
 
-          <h3 style={{ marginTop: 24 }}>메뉴별 판매량 TOP</h3>
+          <h3 style={{ marginTop: 24 }}>메뉴별 판매</h3>
+          <p className="text-muted" style={{ fontSize: "0.85rem" }}>
+            <strong>주문액</strong>은 할인 전 정가 합계이고, <strong>수납</strong>은 그 메뉴에 실제로 배분된 돈입니다.
+            쿠폰으로 무료 제공한 몫은 수납에 들어가지 않아요.
+          </p>
           {summary.menuSales.length === 0 && <p className="text-muted">판매 내역이 없어요.</p>}
           {summary.menuSales.map((m) => (
             <Bar
@@ -151,9 +205,22 @@ export default function RevenuePanel() {
               label={m.name}
               value={m.quantitySold}
               max={menuMax}
-              valueLabel={`${m.quantitySold}개 · ${m.revenue.toLocaleString()}원`}
+              valueLabel={`${m.quantitySold}개 · 주문 ${m.orderAmount.toLocaleString()}원 · 수납 ${m.paidRevenue.toLocaleString()}원${
+                m.couponFreeCount > 0 ? ` · 쿠폰 무료 ${m.couponFreeCount}건` : ""
+              }`}
             />
           ))}
+          <div className="list-row">
+            <span>메뉴 배분 수납 + 미배분 수납(게임 이용료·금액 기반 결제)</span>
+            <strong>
+              {summary.menuPaidRevenue.toLocaleString()}원 + {summary.unallocatedCharged.toLocaleString()}원 ={" "}
+              {(summary.menuPaidRevenue + summary.unallocatedCharged).toLocaleString()}원
+            </strong>
+          </div>
+          <p className="text-muted" style={{ fontSize: "0.85rem" }}>
+            이 합계는 항상 순매출과 같아야 합니다. 배분 근거가 없는 과거 결제(금액 기반 테이블 결제, 기존 게임 시간제
+            이용료)는 특정 메뉴에 임의로 귀속시키지 않고 '미배분'으로 따로 보여줍니다.
+          </p>
 
           <h3 style={{ marginTop: 24 }}>테이블별 매출</h3>
           {summary.byTable.length === 0 && <p className="text-muted">매출 내역이 없어요.</p>}

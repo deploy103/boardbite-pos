@@ -19,7 +19,7 @@ posRouter.use(staffGate("POS"));
 
 posRouter.get("/menu-items", async (_req, res) => {
   const items = await prisma.menuItem.findMany({
-    where: { isActive: true },
+    where: { isActive: true, deletedAt: null },
     orderBy: [{ categoryId: "asc" }, { sortOrder: "asc" }],
     include: { category: true },
   });
@@ -114,7 +114,7 @@ posRouter.patch("/menu-items/:id/sold-out", async (req, res) => {
     return;
   }
   const item = await prisma.menuItem.findUnique({ where: { id: req.params.id } });
-  if (!item) {
+  if (!item || item.deletedAt) {
     res.status(404).json({ error: "존재하지 않는 메뉴예요." });
     return;
   }

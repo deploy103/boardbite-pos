@@ -14,9 +14,16 @@ const ORDER_WITH_TABLE_INCLUDE = {
   tableSession: { include: { table: true } },
 } as const;
 
+/**
+ * SERVING은 "테이블로 가져다 주는" 화면이다. FRONT 현장 거래 주문(tableSessionId=null)은
+ * 손님이 카운터에서 직접 받아가므로 여기 나오지 않고, FRONT의 현장 거래 목록에서
+ * 주문번호를 확인해 수령 완료 처리한다(요구사항.md §5.4).
+ */
+const TABLE_ORDERS_ONLY = { tableSessionId: { not: null } } as const;
+
 servingRouter.get("/ready", async (_req, res) => {
   const orders = await prisma.order.findMany({
-    where: { status: "READY" },
+    where: { status: "READY", ...TABLE_ORDERS_ONLY },
     orderBy: { readyAt: "asc" },
     include: ORDER_WITH_TABLE_INCLUDE,
   });
@@ -26,7 +33,7 @@ servingRouter.get("/ready", async (_req, res) => {
 /** 최근 서빙완료 이력 — "잘못 눌렀을 때 되돌리기" UI가 대상을 찾을 수 있도록 최근 N건을 함께 보여준다. */
 servingRouter.get("/recently-served", async (_req, res) => {
   const orders = await prisma.order.findMany({
-    where: { status: "SERVED" },
+    where: { status: "SERVED", ...TABLE_ORDERS_ONLY },
     orderBy: { servedAt: "desc" },
     take: 30,
     include: ORDER_WITH_TABLE_INCLUDE,
