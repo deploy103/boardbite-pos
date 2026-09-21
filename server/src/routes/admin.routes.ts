@@ -35,6 +35,10 @@ import {
   deleteOptionChoice,
   deleteOptionGroup,
   listMenuForAdmin,
+  reorderMenuItems,
+  reorderOptionChoices,
+  reorderOptionGroups,
+  setChoiceStockLink,
   updateMenuItem,
   updateOptionChoice,
   updateOptionGroup,
@@ -629,6 +633,8 @@ const optionChoiceSchema = z.object({
   extraPrice: z.number().int().min(0).default(0),
   isActive: z.boolean().optional(),
   sortOrder: z.number().int().optional(),
+  /** 재고 품목(메뉴) 연결. 연결하면 그 메뉴가 품절될 때 이 선택지도 자동으로 품절이 된다. */
+  linkedMenuItemId: z.string().min(1).nullable().optional(),
 });
 
 adminRouter.post("/menu/option-groups/:id/choices", async (req, res) => {
@@ -664,6 +670,80 @@ adminRouter.delete("/menu/option-groups/:groupId/choices/:choiceId", async (req,
   try {
     await deleteOptionChoice(req.params.choiceId, req.params.groupId);
     res.json({ ok: true });
+  } catch (err) {
+    if (!sendDomainError(res, err)) throw err;
+  }
+});
+
+// ---- 표시 순서 ----
+
+const reorderSchema = z.object({ ids: z.array(z.string().min(1)).min(1).max(300) });
+
+/** 카테고리 안에서 손님에게 보이는 메뉴 순서. */
+adminRouter.post("/menu/categories/:id/reorder-items", async (req, res) => {
+  const parsed = reorderSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "정렬 목록이 올바르지 않아요." });
+    return;
+  }
+  try {
+    res.json(await reorderMenuItems(req.params.id, parsed.data.ids));
+  } catch (err) {
+    if (!sendDomainError(res, err)) throw err;
+  }
+});
+
+/** 한 메뉴 안에서 옵션 그룹이 보이는 순서. */
+adminRouter.post("/menu/items/:id/reorder-option-groups", async (req, res) => {
+  const parsed = reorderSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "정렬 목록이 올바르지 않아요." });
+    return;
+  }
+  try {
+    res.json(await reorderOptionGroups(req.params.id, parsed.data.ids));
+  } catch (err) {
+    if (!sendDomainError(res, err)) throw err;
+  }
+});
+
+/** 한 그룹 안에서 선택지가 보이는 순서. */
+adminRouter.post("/menu/option-groups/:id/reorder-choices", async (req, res) => {
+  const parsed = reorderSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "정렬 목록이 올바르지 않아요." });
+    return;
+  }
+  try {
+    res.json(await reorderOptionChoices(req.params.id, parsed.data.ids));
+  } catch (err) {
+    if (!sendDomainError(res, err)) throw err;
+  }
+});
+
+const stockLinkSchema = z.object({ linkedMenuItemId: z.string().min(1).nullable() });
+
+/**
+ * 옵션 선택지 ↔ 재고 품목(메뉴) 연결.
+ * 연결해 두면 그 메뉴를 품절 처리하는 순간 이 선택지도 손님 화면에서 자동으로 품절이 된다.
+ */
+adminRouter.post("/menu/option-groups/:groupId/choices/:choiceId/stock-link", async (req, res) => {
+  const parsed = stockLinkSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "연결할 메뉴를 확인해 주세요." });
+    return;
+  }
+  try {
+    const choice = await setChoiceStockLink(req.params.choiceId, req.params.groupId, parsed.data.linkedMenuItemId);
+    await recordAuditLog({
+      actorType: "STAFF",
+      actorId: req.staff!.id,
+      action: "MENU_OPTION_STOCK_LINKED",
+      targetType: "OptionChoice",
+      targetId: choice.id,
+      metadata: { linkedMenuItemId: parsed.data.linkedMenuItemId },
+    });
+    res.json({ choice });
   } catch (err) {
     if (!sendDomainError(res, err)) throw err;
   }

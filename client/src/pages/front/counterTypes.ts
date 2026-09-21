@@ -3,7 +3,10 @@
 
 import type { MenuItem } from "../customer/types.js";
 
-/** 현장 판매 메뉴. 옵션 구조는 손님 화면과 동일하므로 OptionSheet를 그대로 재사용한다. */
+/**
+ * 현장 판매 메뉴. 옵션 구조는 손님 화면과 동일하므로 OptionSheet를 그대로 재사용한다.
+ * 선택지의 품절 여부(isSoldOut)도 손님 화면과 같은 필드로 내려오므로 별도 처리가 필요 없다.
+ */
 export interface CounterMenuItem extends MenuItem {
   channel: "TABLE" | "FRONT" | "BOTH";
   needsCooking: boolean;

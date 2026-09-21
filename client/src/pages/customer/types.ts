@@ -5,6 +5,10 @@ export interface OptionChoice {
   id: string;
   name: string;
   extraPrice: number;
+  /** 연결된 재고 품목이 품절이면 true. 보이기는 하지만 고를 수 없다. */
+  isSoldOut?: boolean;
+  /** 무엇 때문에 품절인지(연결된 메뉴 이름). 화면이 "계란 품절"처럼 안내한다. */
+  soldOutReason?: string | null;
 }
 
 export interface OptionGroup {

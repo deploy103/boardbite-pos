@@ -4,7 +4,7 @@ import { recordAuditLogBestEffort } from "./auditLog.js";
 import { appEvents, RealtimeEvent } from "../realtime.js";
 import type { OrderStatus } from "../types/domain.js";
 import { maybeAutoSettleTableSession } from "./tableSession.js";
-import { LIVE_OPTION_INCLUDE, channelAllows, servingModeOf, type ServingMode } from "./menuCatalog.js";
+import { LIVE_OPTION_INCLUDE, channelAllows, isChoiceSoldOut, servingModeOf, type ServingMode } from "./menuCatalog.js";
 import type { Db } from "./billing.js";
 
 export interface CreateOrderItemInput {
@@ -22,8 +22,17 @@ export interface CreateOrderInput {
 
 export class OrderValidationError extends Error {}
 
-type MenuItemWithOptions = Prisma.MenuItemGetPayload<{ include: { optionGroups: { include: { choices: true } } } }>;
-type ChoiceWithGroup = Prisma.OptionChoiceGetPayload<{ include: { group: true } }>;
+/** 옵션 품절 전파를 판정하려면 선택지마다 연결된 재고 품목의 현재 상태가 필요하다. */
+const STOCK_LINK_SELECT = {
+  linkedMenuItem: { select: { id: true, name: true, isSoldOut: true, isActive: true, deletedAt: true } },
+} as const;
+
+type MenuItemWithOptions = Prisma.MenuItemGetPayload<{
+  include: { optionGroups: { include: { choices: { include: typeof STOCK_LINK_SELECT } } } };
+}>;
+type ChoiceWithGroup = Prisma.OptionChoiceGetPayload<{
+  include: { group: true } & typeof STOCK_LINK_SELECT;
+}>;
 
 export interface OrderItemOptionSnapshot {
   optionChoiceId: string;
@@ -64,6 +73,11 @@ export function validateItemOptions(
       // 삭제/비활성 그룹의 선택지는 "메뉴에 속한 활성 옵션"이 아니므로 동일하게 거부한다.
       throw new OrderValidationError("올바르지 않은 옵션이 포함되어 있습니다.");
     }
+    if (isChoiceSoldOut(choice)) {
+      // 재고 품목이 품절된 옵션. 화면에는 회색으로 보이지만 서버가 최종적으로 막는다
+      // (손님이 품절 직전에 담아둔 장바구니를 그대로 제출하는 경우).
+      throw new OrderValidationError(`${choice.name}은(는) 품절되었어요. 다른 옵션을 선택해 주세요.`);
+    }
     selectedByGroup.set(choice.groupId, (selectedByGroup.get(choice.groupId) ?? 0) + 1);
     options.push({
       optionChoiceId: choice.id,
@@ -81,11 +95,14 @@ export function validateItemOptions(
     if (group.required && count === 0) {
       // 고를 수 있는 선택지가 하나도 없는 필수 그룹은 "선택 불가"가 아니라 "판매 불가"다
       // (요구사항.md §3.1) — 조용히 통과시키면 필수 규칙이 사실상 사라진다.
-      const hasSelectableChoice = group.choices.some((choice) => choice.isActive);
+      const selectable = group.choices.filter((choice) => choice.isActive && !isChoiceSoldOut(choice));
+      const allSoldOut = group.choices.length > 0 && selectable.length === 0;
       throw new OrderValidationError(
-        hasSelectableChoice
+        selectable.length > 0
           ? `'${group.name}' 옵션을 선택해 주세요.`
-          : `${menuItem.name}의 '${group.name}' 옵션에 선택할 수 있는 항목이 없어 지금은 주문할 수 없어요. 관리자에게 알려 주세요.`,
+          : allSoldOut
+            ? `${menuItem.name}의 '${group.name}' 옵션이 모두 품절되어 지금은 주문할 수 없어요.`
+            : `${menuItem.name}의 '${group.name}' 옵션에 선택할 수 있는 항목이 없어 지금은 주문할 수 없어요. 관리자에게 알려 주세요.`,
       );
     }
   }
@@ -130,7 +147,11 @@ export async function resolveOrderLines(
 
   const allOptionChoiceIds = [...new Set(items.flatMap((i) => i.optionChoiceIds))];
   const optionChoices = allOptionChoiceIds.length
-    ? await db.optionChoice.findMany({ where: { id: { in: allOptionChoiceIds } }, include: { group: true } })
+    ? await db.optionChoice.findMany({
+        where: { id: { in: allOptionChoiceIds } },
+        // 연결된 재고 품목이 품절이면 그 옵션도 주문할 수 없다 — 확정 시점에 다시 확인한다.
+        include: { group: true, ...STOCK_LINK_SELECT },
+      })
     : [];
   const optionChoiceMap = new Map(optionChoices.map((o) => [o.id, o]));
 

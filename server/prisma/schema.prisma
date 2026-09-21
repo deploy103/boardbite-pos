@@ -189,6 +189,8 @@ model MenuItem {
   optionGroups  OptionGroup[]
   orderItems    OrderItem[]
   couponTargets CouponBatchTarget[]
+  /// 이 메뉴를 재고 품목으로 연결한 옵션 선택지들. 이 메뉴가 품절되면 전부 따라서 품절된다.
+  stockLinkedChoices OptionChoice[] @relation("OptionChoiceStock")
 
   @@index([categoryId])
 }
@@ -221,9 +223,17 @@ model OptionChoice {
   sortOrder  Int         @default(0)
   deletedAt  DateTime?
 
+  /// 이 선택지가 실제로 소비하는 재고 품목(메뉴). 연결하면 **그 메뉴의 품절 상태를 그대로 따라간다**
+  /// — 계란을 품절 처리하면 우동의 '계란 추가' 옵션도 자동으로 품절이 된다(요구사항: 품절 자동 전파).
+  /// 연결은 선택이며, 연결하지 않은 선택지는 품절 개념 없이 활성/비활성으로만 관리한다.
+  /// 품절은 "보이지만 고를 수 없음"이고 비활성(isActive=false)은 "아예 보이지 않음"으로 서로 다르다.
+  linkedMenuItemId String?
+  linkedMenuItem   MenuItem? @relation("OptionChoiceStock", fields: [linkedMenuItemId], references: [id])
+
   orderItemOptions OrderItemOption[]
 
   @@index([groupId])
+  @@index([linkedMenuItemId])
 }
 
 /// 주문 소유자는 TableSession(테이블 후불) 또는 CounterSale(FRONT 현장 결제) **둘 중 정확히 하나**다.

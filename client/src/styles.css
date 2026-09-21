@@ -1681,3 +1681,43 @@ h1 {
 .checkout-discount-row .btn-secondary {
   margin: 0;
 }
+
+/* 품절된 옵션 선택지 — 감추지 않고 회색으로 남겨 "원래 있는데 지금 떨어졌다"를 보여준다. */
+.option-choice--sold-out {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.option-choice--sold-out .option-choice__name {
+  text-decoration: line-through;
+}
+
+/* 순서 이동 버튼 — 번호 입력 대신 위/아래 한 칸씩 옮긴다. */
+.sort-buttons {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.sort-btn {
+  width: 28px;
+  height: 22px;
+  padding: 0;
+  line-height: 1;
+  border: 1px solid var(--color-bg-alt);
+  border-radius: 6px;
+  background: var(--color-bg);
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.sort-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+/* 재고 연결로 품절된 선택지 */
+.admin-option-choice--sold-out .field {
+  opacity: 0.6;
+}

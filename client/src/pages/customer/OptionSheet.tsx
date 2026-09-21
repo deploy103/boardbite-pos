@@ -33,7 +33,8 @@ export default function OptionSheet({
     const initial: Record<string, string[]> = {};
     if (!initialOptionChoiceIds?.length) return initial;
     for (const group of item.optionGroups) {
-      const picked = group.choices.filter((c) => initialOptionChoiceIds.includes(c.id)).map((c) => c.id);
+      // 장바구니를 다시 열었을 때 그 사이 품절된 옵션은 선택을 풀어 준다.
+      const picked = group.choices.filter((c) => initialOptionChoiceIds.includes(c.id) && !c.isSoldOut).map((c) => c.id);
       if (picked.length > 0) initial[group.id] = picked;
     }
     return initial;
@@ -61,10 +62,14 @@ export default function OptionSheet({
 
   const selectedIds = useMemo(() => Object.values(selectedByGroup).flat(), [selectedByGroup]);
 
-  /** 필수인데 고를 수 있는 선택지가 하나도 없는 그룹 = 지금은 팔 수 없는 메뉴다(서버도 주문을 거부한다). */
-  const unsellableGroups = item.optionGroups.filter((group) => group.required && group.choices.length === 0);
+  /**
+   * 필수인데 고를 수 있는 선택지가 하나도 없는 그룹 = 지금은 팔 수 없는 메뉴다(서버도 주문을 거부한다).
+   * 선택지가 있어도 **전부 품절**이면 마찬가지다.
+   */
+  const selectableOf = (group: OptionGroup) => group.choices.filter((choice) => !choice.isSoldOut);
+  const unsellableGroups = item.optionGroups.filter((group) => group.required && selectableOf(group).length === 0);
   const missingRequiredGroup = item.optionGroups.find(
-    (group) => group.required && group.choices.length > 0 && (selectedByGroup[group.id]?.length ?? 0) === 0,
+    (group) => group.required && selectableOf(group).length > 0 && (selectedByGroup[group.id]?.length ?? 0) === 0,
   );
   const canConfirm = unsellableGroups.length === 0 && !missingRequiredGroup;
 
@@ -98,7 +103,8 @@ export default function OptionSheet({
 
       {unsellableGroups.length > 0 && (
         <p className="error-text">
-          '{unsellableGroups.map((g) => g.name).join(", ")}' 옵션에 고를 수 있는 항목이 없어요. 직원에게 알려 주세요.
+          '{unsellableGroups.map((g) => g.name).join(", ")}' 옵션을 지금 고를 수 없어요(품절이거나 준비되지 않았어요).
+          직원에게 알려 주세요.
         </p>
       )}
 
@@ -120,12 +126,20 @@ export default function OptionSheet({
             {group.choices.length === 0 && <p className="text-muted">선택할 수 있는 항목이 없어요.</p>}
             {group.choices.map((choice) => {
               const checked = selected.includes(choice.id);
+              // 품절 옵션은 감추지 않고 회색으로 남겨 둔다 — "원래 있는데 지금 떨어졌다"가 보여야
+              // 손님이 메뉴 구성을 오해하지 않는다.
+              const soldOut = Boolean(choice.isSoldOut);
               return (
-                <label className="option-choice" key={choice.id}>
+                <label
+                  className={`option-choice ${soldOut ? "option-choice--sold-out" : ""}`}
+                  key={choice.id}
+                  aria-disabled={soldOut}
+                >
                   <input
                     type={group.multiSelect ? "checkbox" : "radio"}
                     name={group.id}
                     checked={checked}
+                    disabled={soldOut}
                     onChange={() => toggleChoice(group, choice.id)}
                     onClick={() => {
                       // radio는 같은 값을 다시 눌러도 change가 안 나므로 클릭에서 해제를 처리한다.
@@ -133,6 +147,7 @@ export default function OptionSheet({
                     }}
                   />
                   <span className="option-choice__name">{choice.name}</span>
+                  {soldOut && <span className="badge badge--danger">품절</span>}
                   {/* 무료 옵션도 값을 숨기지 않고 +0원으로 명시한다(요구사항.md §3.2). */}
                   <span className={`option-choice__price ${choice.extraPrice === 0 ? "option-choice__price--free" : ""}`}>
                     +{choice.extraPrice.toLocaleString()}원
