@@ -17,6 +17,11 @@ interface OptionChoice {
   extraPrice: number;
   isActive: boolean;
   sortOrder: number;
+  /** 연결된 재고 품목. 이 메뉴가 품절되면 선택지도 자동 품절이 된다. */
+  linkedMenuItemId: string | null;
+  linkedMenuItem: { id: string; name: string; isSoldOut: boolean } | null;
+  isSoldOut: boolean;
+  soldOutReason: string | null;
 }
 
 interface OptionGroup {
@@ -57,6 +62,55 @@ interface DeletePreview {
   item: { id: string; name: string };
   orderedCount: number;
   coupons: { count: number; soleTargetCount: number; codes: string[] };
+}
+
+/**
+ * 위/아래 한 칸 이동 버튼. 번호를 직접 입력하는 대신 순서를 눈으로 보며 바꾼다.
+ * 서버에는 **새 순서 전체**를 보내고 서버가 0..n-1로 다시 매기므로 번호가 겹칠 일이 없다.
+ */
+function MoveButtons({
+  index,
+  total,
+  onMove,
+  label,
+}: {
+  index: number;
+  total: number;
+  onMove: (from: number, to: number) => void;
+  label: string;
+}) {
+  return (
+    <span className="sort-buttons">
+      <button
+        type="button"
+        className="sort-btn"
+        disabled={index === 0}
+        onClick={() => onMove(index, index - 1)}
+        aria-label={`${label} 위로`}
+        title="위로"
+      >
+        ↑
+      </button>
+      <button
+        type="button"
+        className="sort-btn"
+        disabled={index === total - 1}
+        onClick={() => onMove(index, index + 1)}
+        aria-label={`${label} 아래로`}
+        title="아래로"
+      >
+        ↓
+      </button>
+    </span>
+  );
+}
+
+/** 배열에서 한 칸 옮긴 새 순서를 만든다(원본은 건드리지 않는다). */
+function moved<T>(list: T[], from: number, to: number): T[] {
+  const next = [...list];
+  const [item] = next.splice(from, 1);
+  next.splice(to, 0, item);
+  return next;
 }
 
 /**
@@ -102,6 +156,13 @@ export default function MenuPanel() {
     setItemForm({ ...itemForm, name: "", price: "" });
     await refresh();
   });
+
+  /** 새 순서 전체를 서버에 보내고 목록을 다시 읽는다. */
+  const reorder = (path: string, ids: string[]) =>
+    wrap(async () => {
+      await api.post(path, { ids });
+      await refresh();
+    })();
 
   const patchItem = (id: string, data: Record<string, unknown>) =>
     wrap(async () => {
@@ -190,10 +251,19 @@ export default function MenuPanel() {
         <div key={c.id} style={{ marginTop: 24 }}>
           <CategoryHeader category={c} onChanged={refresh} onDelete={() => setDeleteCategoryTarget(c)} onError={setError} />
           {c.items.length === 0 && <p className="text-muted">메뉴가 없어요.</p>}
-          {c.items.map((item) => (
+          {c.items.map((item, itemIndex) => (
             <div key={item.id} className={`list-row ${item.isSoldOut ? "list-row--disabled" : ""}`} style={{ flexDirection: "column", alignItems: "stretch" }}>
               <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
-                <div>
+                <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+                  <MoveButtons
+                    index={itemIndex}
+                    total={c.items.length}
+                    label={item.name}
+                    onMove={(from, to) =>
+                      reorder(`/api/staff/admin/menu/categories/${c.id}/reorder-items`, moved(c.items, from, to).map((i) => i.id))
+                    }
+                  />
+                  <div>
                   <strong>{item.name}</strong> · {item.price.toLocaleString()}원{" "}
                   <span className="badge">{CHANNEL_LABEL[item.channel]}</span>{" "}
                   <span className="badge">{item.needsCooking || item.showInKitchen ? "주방" : "현장 제공"}</span>{" "}
@@ -202,10 +272,11 @@ export default function MenuPanel() {
                   {item.optionGroups.length > 0 && <span className="badge">옵션 {item.optionGroups.length}</span>}
                   {item.blockedRequiredGroups.length > 0 && (
                     <div className="error-text">
-                      '{item.blockedRequiredGroups.join(", ")}' 필수 옵션에 고를 수 있는 항목이 없어 지금은 판매되지 않아요.
-                      선택지를 추가하거나 그룹을 비활성화해 주세요.
+                      '{item.blockedRequiredGroups.join(", ")}' 필수 옵션을 지금 고를 수 없어(품절이거나 선택지가 없어)
+                      이 메뉴는 판매되지 않아요. 선택지를 추가하거나 품절을 풀어 주세요.
                     </div>
                   )}
+                  </div>
                 </div>
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                   <button className="btn-secondary" onClick={() => patchItem(item.id, { isSoldOut: !item.isSoldOut })}>
@@ -353,6 +424,8 @@ function MenuItemEditor({
   onChanged: () => Promise<void>;
   onError: (message: string) => void;
 }) {
+  // 선택지에 연결할 수 있는 후보 = 삭제되지 않은 모든 메뉴.
+  const allMenuItems = categories.flatMap((c) => c.items).map((i) => ({ id: i.id, name: i.name, isSoldOut: i.isSoldOut }));
   const [form, setForm] = useState({
     name: item.name,
     price: String(item.price),
@@ -510,14 +583,28 @@ function MenuItemEditor({
       </button>
 
       <h4 style={{ marginTop: 20 }}>옵션 그룹</h4>
+      <p className="text-muted" style={{ fontSize: "0.85rem" }}>
+        ↑↓ 로 손님에게 보이는 순서를 바꿉니다. 선택지에 <strong>재고 메뉴를 연결</strong>해 두면 그 메뉴를 품절
+        처리할 때 이 옵션도 자동으로 품절이 됩니다.
+      </p>
       {item.optionGroups.length === 0 && <p className="text-muted">옵션이 없어요. 아래에서 그룹을 추가하세요.</p>}
-      {item.optionGroups.map((group) => (
+      {item.optionGroups.map((group, groupIndex) => (
         <OptionGroupEditor
           key={group.id}
           menuItemId={item.id}
           group={group}
+          index={groupIndex}
+          total={item.optionGroups.length}
+          allMenuItems={allMenuItems}
           saving={saving}
           onCall={call}
+          onReorderGroups={(from, to) =>
+            call(() =>
+              api.post(`/api/staff/admin/menu/items/${item.id}/reorder-option-groups`, {
+                ids: moved(item.optionGroups, from, to).map((g) => g.id),
+              }),
+            )
+          }
         />
       ))}
 
@@ -549,13 +636,21 @@ function MenuItemEditor({
 function OptionGroupEditor({
   menuItemId,
   group,
+  index,
+  total,
+  allMenuItems,
   saving,
   onCall,
+  onReorderGroups,
 }: {
   menuItemId: string;
   group: OptionGroup;
+  index: number;
+  total: number;
+  allMenuItems: { id: string; name: string; isSoldOut: boolean }[];
   saving: boolean;
   onCall: (fn: () => Promise<unknown>) => Promise<void>;
+  onReorderGroups: (from: number, to: number) => void;
 }) {
   const [name, setName] = useState(group.name);
   const [choice, setChoice] = useState({ name: "", extraPrice: "0" });
@@ -589,14 +684,7 @@ function OptionGroupEditor({
           />
           <span className="option-choice__name">사용</span>
         </label>
-        <input
-          className="field"
-          style={{ marginBottom: 0, width: 90 }}
-          type="number"
-          value={group.sortOrder}
-          onChange={(e) => onCall(() => api.patch(base, { sortOrder: Number(e.target.value) || 0 }))}
-          aria-label="그룹 정렬 순서"
-        />
+        <MoveButtons index={index} total={total} label={`${group.name} 그룹`} onMove={onReorderGroups} />
         <button className="btn-secondary" disabled={saving || name === group.name} onClick={() => onCall(() => api.patch(base, { name }))}>
           이름 저장
         </button>
@@ -606,10 +694,22 @@ function OptionGroupEditor({
       </div>
 
       {group.choices.length === 0 && <p className="error-text">선택지가 없어요. 필수 그룹이면 이 메뉴는 판매되지 않습니다.</p>}
-      {group.choices.map((c) => {
+      {group.choices.map((c, choiceIndex) => {
         const choiceBase = `/api/staff/admin/menu/option-groups/${group.id}/choices/${c.id}`;
         return (
-          <div key={c.id} className="admin-option-choice">
+          <div key={c.id} className={`admin-option-choice ${c.isSoldOut ? "admin-option-choice--sold-out" : ""}`}>
+            <MoveButtons
+              index={choiceIndex}
+              total={group.choices.length}
+              label={c.name}
+              onMove={(from, to) =>
+                onCall(() =>
+                  api.post(`/api/staff/admin/menu/option-groups/${group.id}/reorder-choices`, {
+                    ids: moved(group.choices, from, to).map((x) => x.id),
+                  }),
+                )
+              }
+            />
             <input
               className="field"
               style={{ marginBottom: 0 }}
@@ -629,6 +729,25 @@ function OptionGroupEditor({
               }
               aria-label="추가금(원)"
             />
+            {/* 재고 메뉴를 연결하면 그 메뉴를 품절 처리할 때 이 선택지도 자동으로 품절이 된다. */}
+            <select
+              className="field"
+              style={{ marginBottom: 0, maxWidth: 170 }}
+              value={c.linkedMenuItemId ?? ""}
+              onChange={(e) =>
+                onCall(() => api.post(`${choiceBase}/stock-link`, { linkedMenuItemId: e.target.value || null }))
+              }
+              aria-label={`${c.name} 재고 메뉴 연결`}
+            >
+              <option value="">재고 연결 없음</option>
+              {allMenuItems.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name}
+                  {m.isSoldOut ? " (품절)" : ""}
+                </option>
+              ))}
+            </select>
+            {c.isSoldOut && <span className="badge badge--danger">품절 · {c.soldOutReason}</span>}
             <label className="option-choice" style={{ border: "none", padding: 0 }}>
               <input
                 type="checkbox"

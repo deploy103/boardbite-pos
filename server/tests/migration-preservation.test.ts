@@ -20,6 +20,7 @@ const PREVIOUS_MIGRATIONS = [
 const NEW_MIGRATIONS = [
   "20260921023651_counter_sales_coupons_menu_lifecycle",
   "20260921042345_coupon_redemption_on_table_sessions",
+  "20260921114302_option_choice_stock_link",
 ];
 
 let workDir: string;
@@ -153,6 +154,11 @@ INSERT INTO "AuditLog" ("id","actorType","action","prevHash","hash","hashVersion
     const group = await db.optionGroup.findUniqueOrThrow({ where: { id: "g1" } });
     expect(group.isActive).toBe(true);
     expect(group.deletedAt).toBeNull();
+
+    // 기존 선택지는 재고 연결 없이(NULL) 복사돼 지금까지의 동작이 그대로 유지된다.
+    const choice = await db.optionChoice.findUniqueOrThrow({ where: { id: "oc1" } });
+    expect(choice.linkedMenuItemId).toBeNull();
+    expect(choice.sortOrder).toBe(0);
 
     // 과거 주문의 "그때 그룹명"은 지어내지 않고 NULL로 남긴다.
     const option = await db.orderItemOption.findUniqueOrThrow({ where: { id: "oio1" } });
