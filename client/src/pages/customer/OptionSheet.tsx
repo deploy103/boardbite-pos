@@ -45,8 +45,10 @@ export default function OptionSheet({
     setSelectedByGroup((prev) => {
       const current = prev[group.id] ?? [];
       if (group.multiSelect) {
-        const next = current.includes(choiceId) ? current.filter((id) => id !== choiceId) : [...current, choiceId];
-        return { ...prev, [group.id]: next };
+        if (current.includes(choiceId)) return { ...prev, [group.id]: current.filter((id) => id !== choiceId) };
+        // 최대 개수를 넘기면 더 고를 수 없다(서버도 같은 규칙으로 막는다).
+        if (group.maxSelect !== null && current.length >= group.maxSelect) return prev;
+        return { ...prev, [group.id]: [...current, choiceId] };
       }
       // 선택 그룹의 단일 선택은 같은 항목을 다시 누르면 해제된다.
       if (!group.required && current.includes(choiceId)) {
@@ -67,9 +69,15 @@ export default function OptionSheet({
    * 선택지가 있어도 **전부 품절**이면 마찬가지다.
    */
   const selectableOf = (group: OptionGroup) => group.choices.filter((choice) => !choice.isSoldOut);
-  const unsellableGroups = item.optionGroups.filter((group) => group.required && selectableOf(group).length === 0);
+  // 최소 개수를 채울 만큼 고를 수 있는 선택지가 없으면 지금은 팔 수 없는 메뉴다.
+  const unsellableGroups = item.optionGroups.filter(
+    (group) => group.minSelect > 0 && selectableOf(group).length < group.minSelect,
+  );
   const missingRequiredGroup = item.optionGroups.find(
-    (group) => group.required && selectableOf(group).length > 0 && (selectedByGroup[group.id]?.length ?? 0) === 0,
+    (group) =>
+      group.minSelect > 0 &&
+      selectableOf(group).length >= group.minSelect &&
+      (selectedByGroup[group.id]?.length ?? 0) < group.minSelect,
   );
   const canConfirm = unsellableGroups.length === 0 && !missingRequiredGroup;
 
@@ -95,7 +103,9 @@ export default function OptionSheet({
             ? "지금은 주문할 수 없어요"
             : canConfirm
               ? `${lineTotal.toLocaleString()}원 ${confirmLabelPrefix}`
-              : `'${missingRequiredGroup?.name}' 옵션을 선택해 주세요`}
+              : missingRequiredGroup!.minSelect > 1
+              ? `'${missingRequiredGroup!.name}' 옵션을 ${missingRequiredGroup!.minSelect}개 이상 선택해 주세요`
+              : `'${missingRequiredGroup!.name}' 옵션을 선택해 주세요`}
         </button>
       }
     >
@@ -115,8 +125,13 @@ export default function OptionSheet({
           <div className="option-group" key={group.id}>
             <div className="option-group__title">
               <span>{group.name}</span>
-              {group.required && <span className="badge badge--warn">필수</span>}
-              {group.multiSelect && <span className="badge">여러 개 선택 가능</span>}
+              {/* 규칙 문구는 서버가 만들어 내려준다 — 화면마다 다르게 표현되지 않는다. */}
+              <span className={`badge ${group.required ? "badge--warn" : ""}`}>{group.selectRangeLabel}</span>
+              {group.maxSelect !== null && group.maxSelect > 1 && (
+                <span className="text-muted" style={{ fontSize: "0.8rem" }}>
+                  {selected.length}/{group.maxSelect}
+                </span>
+              )}
               {showClear && (
                 <button type="button" className="option-group__clear" onClick={() => clearGroup(group)}>
                   선택 안 함
@@ -129,17 +144,20 @@ export default function OptionSheet({
               // 품절 옵션은 감추지 않고 회색으로 남겨 둔다 — "원래 있는데 지금 떨어졌다"가 보여야
               // 손님이 메뉴 구성을 오해하지 않는다.
               const soldOut = Boolean(choice.isSoldOut);
+              // 최대 개수를 채웠으면 아직 고르지 않은 항목은 누를 수 없게 한다.
+              const capReached =
+                group.maxSelect !== null && group.maxSelect > 1 && !checked && selected.length >= group.maxSelect;
               return (
                 <label
-                  className={`option-choice ${soldOut ? "option-choice--sold-out" : ""}`}
+                  className={`option-choice ${soldOut ? "option-choice--sold-out" : ""} ${capReached ? "option-choice--capped" : ""}`}
                   key={choice.id}
-                  aria-disabled={soldOut}
+                  aria-disabled={soldOut || capReached}
                 >
                   <input
                     type={group.multiSelect ? "checkbox" : "radio"}
                     name={group.id}
                     checked={checked}
-                    disabled={soldOut}
+                    disabled={soldOut || capReached}
                     onChange={() => toggleChoice(group, choice.id)}
                     onClick={() => {
                       // radio는 같은 값을 다시 눌러도 change가 안 나므로 클릭에서 해제를 처리한다.

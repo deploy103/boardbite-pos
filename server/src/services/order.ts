@@ -13,6 +13,7 @@ import {
   type SoldOutTarget,
 } from "./inventory.js";
 import { withWriteConflictRetry } from "./writeConflict.js";
+import { checkSelectedCount } from "./optionRules.js";
 import type { Db } from "./billing.js";
 
 export interface CreateOrderItemInput {
@@ -103,22 +104,25 @@ export function validateItemOptions(
 
   for (const group of menuItem.optionGroups) {
     const count = selectedByGroup.get(group.id) ?? 0;
-    if (!group.multiSelect && count > 1) {
-      throw new OrderValidationError(`'${group.name}' 옵션은 하나만 선택할 수 있습니다.`);
-    }
-    if (group.required && count === 0) {
-      // 고를 수 있는 선택지가 하나도 없는 필수 그룹은 "선택 불가"가 아니라 "판매 불가"다
-      // (요구사항.md §3.1) — 조용히 통과시키면 필수 규칙이 사실상 사라진다.
+    // 최소/최대 개수는 optionRules가 단일 기준으로 판정한다(요구사항 5절).
+    const problem = checkSelectedCount(group, count);
+    if (!problem) continue;
+
+    // 모자란 경우라면 "왜 못 고르는지"를 구분해 알려준다 — 고를 수 있는 선택지가 아예 없거나
+    // 전부 품절이면 그건 손님 잘못이 아니라 판매 불가 상태다(요구사항.md §3.1).
+    if (count < group.minSelect) {
       const selectable = group.choices.filter((choice) => choice.isActive && !isSoldOut(choice));
-      const allSoldOut = group.choices.length > 0 && selectable.length === 0;
-      throw new OrderValidationError(
-        selectable.length > 0
-          ? `'${group.name}' 옵션을 선택해 주세요.`
-          : allSoldOut
+      if (selectable.length < group.minSelect) {
+        const allSoldOut = group.choices.length > 0 && selectable.length === 0;
+        throw new OrderValidationError(
+          allSoldOut
             ? `${menuItem.name}의 '${group.name}' 옵션이 모두 품절되어 지금은 주문할 수 없어요.`
-            : `${menuItem.name}의 '${group.name}' 옵션에 선택할 수 있는 항목이 없어 지금은 주문할 수 없어요. 관리자에게 알려 주세요.`,
-      );
+            : `${menuItem.name}의 '${group.name}' 옵션에 선택할 수 있는 항목이 부족해 지금은 주문할 수 없어요. 관리자에게 알려 주세요.`,
+          "OPTION_UNAVAILABLE",
+        );
+      }
     }
+    throw new OrderValidationError(problem, "OPTION_COUNT_INVALID");
   }
 
   return options;

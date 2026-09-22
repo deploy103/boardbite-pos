@@ -175,8 +175,8 @@ export default function ClosingPanel({ mfaEnabled }: { mfaEnabled: boolean }) {
           <span>
             {t.tableNumber}번 · <span className="badge badge--warn">{t.status}</span>
           </span>
-          <strong className={t.remainingAmount > 0 ? "closing-cell__value--negative" : ""}>
-            미수 {won(t.remainingAmount)}
+          <strong className={t.remainingAmount !== 0 ? "closing-cell__value--negative" : ""}>
+            {t.remainingAmount < 0 ? `환불 필요 ${won(Math.abs(t.remainingAmount))}` : `미수 ${won(t.remainingAmount)}`}
           </strong>
         </div>
       ))}

@@ -27,8 +27,12 @@ interface OptionChoice {
 interface OptionGroup {
   id: string;
   name: string;
+  /** 선택 개수 범위. 이것이 단일 기준이고 required/multiSelect는 서버가 파생해 준다. */
+  minSelect: number;
+  maxSelect: number | null;
   required: boolean;
   multiSelect: boolean;
+  selectRangeLabel: string;
   isActive: boolean;
   sortOrder: number;
   choices: OptionChoice[];
@@ -660,22 +664,58 @@ function OptionGroupEditor({
     <div className="admin-option-group">
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
         <input className="field" style={{ marginBottom: 0, maxWidth: 220 }} value={name} onChange={(e) => setName(e.target.value)} />
-        <label className="option-choice" style={{ border: "none", padding: 0 }}>
-          <input
-            type="checkbox"
-            checked={group.required}
-            onChange={(e) => onCall(() => api.patch(base, { required: e.target.checked }))}
-          />
-          <span className="option-choice__name">필수</span>
+        {/*
+          선택 개수는 최소/최대 한 쌍으로만 정한다. "필수"는 최소 1개, "단일 선택"은 최대 1개와 같은 말이라
+          체크박스를 따로 두면 두 설정이 어긋날 수 있다. 자주 쓰는 조합은 아래 빠른 설정으로 고른다.
+        */}
+        <span className="badge">{group.selectRangeLabel}</span>
+        <label className="field-label" htmlFor={`min-${group.id}`}>
+          최소
         </label>
-        <label className="option-choice" style={{ border: "none", padding: 0 }}>
-          <input
-            type="checkbox"
-            checked={group.multiSelect}
-            onChange={(e) => onCall(() => api.patch(base, { multiSelect: e.target.checked }))}
-          />
-          <span className="option-choice__name">복수 선택</span>
+        <input
+          id={`min-${group.id}`}
+          className="field"
+          style={{ marginBottom: 0, width: 72 }}
+          type="number"
+          min={0}
+          value={group.minSelect}
+          onChange={(e) => onCall(() => api.patch(base, { minSelect: Number(e.target.value) || 0 }))}
+        />
+        <label className="field-label" htmlFor={`max-${group.id}`}>
+          최대
         </label>
+        <input
+          id={`max-${group.id}`}
+          className="field"
+          style={{ marginBottom: 0, width: 72 }}
+          type="number"
+          min={1}
+          placeholder="제한 없음"
+          value={group.maxSelect ?? ""}
+          onChange={(e) => onCall(() => api.patch(base, { maxSelect: e.target.value === "" ? null : Number(e.target.value) }))}
+        />
+        <select
+          className="field"
+          style={{ marginBottom: 0, width: 150 }}
+          value={group.minSelect === 1 && group.maxSelect === 1 ? "required-one" : group.minSelect === 0 && group.maxSelect === 1 ? "optional-one" : group.minSelect === 0 && group.maxSelect === null ? "optional-many" : "custom"}
+          onChange={(e) => {
+            const preset: Record<string, { minSelect: number; maxSelect: number | null }> = {
+              "required-one": { minSelect: 1, maxSelect: 1 },
+              "optional-one": { minSelect: 0, maxSelect: 1 },
+              "optional-many": { minSelect: 0, maxSelect: null },
+            };
+            const next = preset[e.target.value];
+            if (next) onCall(() => api.patch(base, next));
+          }}
+          aria-label="선택 규칙 빠른 설정"
+        >
+          <option value="required-one">필수 · 1개</option>
+          <option value="optional-one">선택 · 1개</option>
+          <option value="optional-many">선택 · 여러 개</option>
+          <option value="custom" disabled>
+            직접 지정
+          </option>
+        </select>
         <label className="option-choice" style={{ border: "none", padding: 0 }}>
           <input
             type="checkbox"

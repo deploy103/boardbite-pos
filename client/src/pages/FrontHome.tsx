@@ -209,10 +209,16 @@ export default function FrontHome() {
             <div className="table-badge">{t.number}번</div>
             <div className="text-muted">
               {t.status === "AVAILABLE" && "빈자리"}
-              {t.status === "OPEN" && `이용중 · ${t.bill?.remainingAmount.toLocaleString()}원 미수`}
+              {/* 미수금이 음수면 초과 수납 상태다 — 결제 후 주문이 취소된 경우가 대표적이다.
+                  환불을 기록해야 테이블을 닫을 수 있으므로 목록에서 바로 보이게 한다. */}
+              {t.status === "OPEN" &&
+                ((t.bill?.remainingAmount ?? 0) < 0
+                  ? `이용중 · 환불 필요 ${Math.abs(t.bill!.remainingAmount).toLocaleString()}원`
+                  : `이용중 · ${t.bill?.remainingAmount.toLocaleString()}원 미수`)}
               {t.status === "SETTLING" && "정산중"}
               {t.status === "DISABLED" && "비활성화"}
             </div>
+            {(t.bill?.remainingAmount ?? 0) < 0 && <span className="badge badge--danger">환불 필요</span>}
             {t.status === "AVAILABLE" && (
               <>
                 {openingId === t.id ? (

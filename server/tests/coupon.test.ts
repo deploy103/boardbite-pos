@@ -94,7 +94,7 @@ describe("쿠폰 (인수 9~15)", () => {
     const { agent: front } = await loginFront();
     const udon = await createMenuItem({ name: "정산우동", price: 3000, channel: "FRONT" });
     const group = await prisma.optionGroup.create({
-      data: { menuItemId: udon.id, name: "추가 토핑", multiSelect: true },
+      data: { menuItemId: udon.id, name: "추가 토핑", minSelect: 0, maxSelect: null },
     });
     const egg = await prisma.optionChoice.create({ data: { groupId: group.id, name: "계란", extraPrice: 500 } });
     const roulette3 = await createCounterOnlyItem("정산룰렛3회", 1000);
@@ -296,7 +296,7 @@ describe("쿠폰 (인수 9~15)", () => {
     const { agent: admin } = await loginAdmin();
     const { agent: front } = await loginFront();
     const udon = await createMenuItem({ name: "옵션차액우동", price: 3000, channel: "FRONT" });
-    const g = await prisma.optionGroup.create({ data: { menuItemId: udon.id, name: "토핑", multiSelect: true } });
+    const g = await prisma.optionGroup.create({ data: { menuItemId: udon.id, name: "토핑", minSelect: 0, maxSelect: null } });
     const egg = await prisma.optionChoice.create({ data: { groupId: g.id, name: "계란", extraPrice: 500 } });
     const code = (await issue(admin, { type: "ITEM", name: "차액권", quantity: 1, targetMenuItemIds: [udon.id] })).body.batch
       .codes[0];
