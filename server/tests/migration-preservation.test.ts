@@ -21,6 +21,7 @@ const NEW_MIGRATIONS = [
   "20260921023651_counter_sales_coupons_menu_lifecycle",
   "20260921042345_coupon_redemption_on_table_sessions",
   "20260921114302_option_choice_stock_link",
+  "20260922021825_inventory_items_and_item_cancellation",
 ];
 
 let workDir: string;
@@ -155,10 +156,18 @@ INSERT INTO "AuditLog" ("id","actorType","action","prevHash","hash","hashVersion
     expect(group.isActive).toBe(true);
     expect(group.deletedAt).toBeNull();
 
-    // 기존 선택지는 재고 연결 없이(NULL) 복사돼 지금까지의 동작이 그대로 유지된다.
+    // 기존 선택지는 공용 물품 연결 없이(NULL), 품절 아님으로 복사돼 지금까지의 동작이 유지된다.
     const choice = await db.optionChoice.findUniqueOrThrow({ where: { id: "oc1" } });
-    expect(choice.linkedMenuItemId).toBeNull();
+    expect(choice.inventoryItemId).toBeNull();
+    expect(choice.isSoldOut).toBe(false);
     expect(choice.sortOrder).toBe(0);
+
+    // 기존 주문/항목은 취소된 적이 없는 상태로 복사된다.
+    const order = await db.order.findUniqueOrThrow({ where: { id: "o1" } });
+    expect(order.cancelReasonCode).toBeNull();
+    expect(order.cancelledById).toBeNull();
+    const orderItem = await db.orderItem.findUniqueOrThrow({ where: { id: "oi1" } });
+    expect(orderItem.cancelledAt).toBeNull();
 
     // 과거 주문의 "그때 그룹명"은 지어내지 않고 NULL로 남긴다.
     const option = await db.orderItemOption.findUniqueOrThrow({ where: { id: "oio1" } });
@@ -226,6 +235,26 @@ INSERT INTO "AuditLog" ("id","actorType","action","prevHash","hash","hashVersion
     expect(item.menuItem.deletedAt).not.toBeNull();
     const violations = await db.$queryRawUnsafe<unknown[]>("PRAGMA foreign_key_check");
     expect(violations).toHaveLength(0);
+  });
+
+  it("직전 버전의 옵션→메뉴 연결이 공용 물품으로 승격돼 동작이 유지된다", async () => {
+    // 이 DB는 linkedMenuItemId가 없던 시점의 데이터라 승격 대상이 없다 —
+    // 승격 SQL이 빈 입력에서도 안전하게 동작하는지(오류 없이 0건 처리) 확인한다.
+    expect(await db.inventoryItem.count()).toBe(0);
+
+    // 새 모델로 직접 연결하면 품절이 공유된다.
+    const inventory = await db.inventoryItem.create({ data: { name: "이관검증물품" } });
+    await db.menuItem.update({ where: { id: "m1" }, data: { inventoryItemId: inventory.id } });
+    await db.optionChoice.update({ where: { id: "oc1" }, data: { inventoryItemId: inventory.id } });
+    await db.inventoryItem.update({ where: { id: inventory.id }, data: { isSoldOut: true } });
+
+    const menu = await db.menuItem.findUniqueOrThrow({ where: { id: "m1" }, include: { inventoryItem: true } });
+    const choice = await db.optionChoice.findUniqueOrThrow({ where: { id: "oc1" }, include: { inventoryItem: true } });
+    expect(menu.inventoryItem!.isSoldOut).toBe(true);
+    expect(choice.inventoryItem!.isSoldOut).toBe(true);
+    // 각자의 로컬 플래그는 건드리지 않았다 — 값이 복사되지 않으므로 어긋날 수 없다.
+    expect(menu.isSoldOut).toBe(false);
+    expect(choice.isSoldOut).toBe(false);
   });
 
   it("기존 게임 시간제 이용 이력이 보존되고 새 현장 판매와 중복 청구되지 않는다", async () => {

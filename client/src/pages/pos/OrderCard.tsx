@@ -12,9 +12,17 @@ export interface KdsOrder {
   counterSale?: { id: string; saleNo: number; status: string } | null;
   items: {
     id: string;
+    menuItemId: string;
     nameSnapshot: string;
     quantity: number;
-    options: { id: string; groupNameSnapshot: string | null; nameSnapshot: string; extraPriceSnapshot: number }[];
+    cancelledAt?: string | null;
+    options: {
+      id: string;
+      optionChoiceId: string;
+      groupNameSnapshot: string | null;
+      nameSnapshot: string;
+      extraPriceSnapshot: number;
+    }[];
   }[];
 }
 
@@ -65,9 +73,10 @@ export default function OrderCard({
       </div>
 
       {order.items.map((item) => (
-        <div key={item.id} className="kds-item">
+        <div key={item.id} className={`kds-item ${item.cancelledAt ? "kds-item--cancelled" : ""}`}>
           <div className="kds-item__name">
             {item.nameSnapshot} × {item.quantity}
+            {item.cancelledAt && <span className="badge badge--danger">취소됨</span>}
           </div>
           {/* 옵션은 메뉴 바로 아래에 줄바꿈 없이 잘리지 않게 전부 보여준다(요구사항.md §3.3). */}
           {item.options.length > 0 && (

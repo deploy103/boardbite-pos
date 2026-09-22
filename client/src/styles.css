@@ -1721,3 +1721,63 @@ h1 {
 .admin-option-choice--sold-out .field {
   opacity: 0.6;
 }
+
+/* ---------------------------------------------------------------------------
+   재료 소진 취소 모달 / 재고 물품 (요구사항 2·4·6절)
+--------------------------------------------------------------------------- */
+
+/* 모바일·태블릿에서 내용이 길어져도 잘리지 않고 스크롤된다. */
+.modal-sheet--scroll {
+  max-height: min(85vh, 720px);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.soldout-group {
+  margin-top: var(--space-3);
+}
+
+.soldout-group__title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  margin-bottom: var(--space-1);
+}
+
+.soldout-impact {
+  margin-top: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--color-warn);
+  border-radius: var(--radius-md);
+  background: #fff9ef;
+}
+
+.soldout-impact__head {
+  font-size: 0.95rem;
+  margin-bottom: var(--space-2);
+}
+
+.soldout-impact__row {
+  padding: var(--space-1) 0;
+  overflow-wrap: anywhere;
+}
+
+.soldout-impact__list {
+  margin: var(--space-1) 0 0;
+  padding-left: var(--space-4);
+  list-style: disc;
+  color: var(--color-text-muted);
+  font-size: 0.85rem;
+}
+
+/* 취소된 주문 항목은 지우지 않고 취소선으로 남긴다. */
+.kds-item--cancelled .kds-item__name {
+  text-decoration: line-through;
+  color: var(--color-text-muted);
+}
+
+@media (prefers-color-scheme: dark) {
+  .soldout-impact {
+    background: rgba(245, 166, 35, 0.12);
+  }
+}

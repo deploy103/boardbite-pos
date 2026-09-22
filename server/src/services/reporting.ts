@@ -142,7 +142,8 @@ export async function computeRevenueSummary(since?: Date, until?: Date): Promise
   // ---- 주문량 축 ----
   const orders = await prisma.order.findMany({
     where: createdAtRange,
-    include: { items: { include: { options: true } } },
+    // 항목 단위 취소분은 판매되지 않았으므로 주문량/주문액에서 뺀다.
+    include: { items: { where: { cancelledAt: null }, include: { options: true } } },
   });
 
   const menuSalesMap = new Map<string, MenuSales>();

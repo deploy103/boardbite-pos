@@ -135,6 +135,14 @@ export function attachSocket(httpServer: HttpServer) {
    * 현장 거래 확정/수령/취소. 손님 브라우저에는 어떤 경우에도 보내지 않는다 —
    * 쿠폰/거래 정보는 인증된 직원만 볼 수 있어야 한다(요구사항.md §8 권한).
    */
+  /**
+   * 판매 가능 상태(품절/재개) 변경 — 손님 테이블과 모든 직원 화면에 알린다.
+   * 값을 싣지 않고 "다시 조회하라"는 신호로만 쓴다. 이벤트를 놓쳐도 각 화면의 주기 재조회로 복구된다.
+   */
+  appEvents.on(RealtimeEvent.MenuAvailabilityChanged, () => {
+    io.emit(RealtimeEvent.MenuAvailabilityChanged, {});
+  });
+
   appEvents.on(RealtimeEvent.CounterSaleRecorded, (payload: { counterSaleId: string; saleNo?: number }) => {
     io.to("staff:front").emit(RealtimeEvent.CounterSaleRecorded, payload);
     io.to("staff:pos").emit(RealtimeEvent.CounterSaleRecorded, payload);

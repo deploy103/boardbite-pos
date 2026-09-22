@@ -18,12 +18,14 @@ import RevenuePanel from "./admin/RevenuePanel.js";
 import SettingsPanel from "./admin/SettingsPanel.js";
 import BackupsPanel from "./admin/BackupsPanel.js";
 import MenuPanel from "./admin/MenuPanel.js";
+import InventoryPanel from "./admin/InventoryPanel.js";
 import CouponsPanel from "./admin/CouponsPanel.js";
 import CounterSalesList from "./front/CounterSalesList.js";
 
 type Tab =
   | "tables"
   | "menu"
+  | "inventory"
   | "coupons"
   | "counter-sales"
   | "users"
@@ -51,6 +53,7 @@ export default function AdminHome() {
           [
             "tables",
             "menu",
+            "inventory",
             "coupons",
             "counter-sales",
             "users",
@@ -67,6 +70,7 @@ export default function AdminHome() {
           <button key={t} className="btn-secondary" onClick={() => setTab(t)} disabled={tab === t}>
             {t === "tables" && "테이블"}
             {t === "menu" && "메뉴"}
+            {t === "inventory" && "재고 물품"}
             {t === "coupons" && "쿠폰"}
             {t === "counter-sales" && "현장 거래"}
             {t === "users" && "사용자"}
@@ -83,6 +87,7 @@ export default function AdminHome() {
       </nav>
       {tab === "tables" && <TablesPanel mfaEnabled={me.mfaEnabled} />}
       {tab === "menu" && <MenuPanel />}
+      {tab === "inventory" && <InventoryPanel />}
       {tab === "coupons" && <CouponsPanel />}
       {tab === "counter-sales" && <CounterSalesList role={me.role} mfaEnabled={me.mfaEnabled} />}
       {tab === "users" && <UsersPanel mfaEnabled={me.mfaEnabled} />}

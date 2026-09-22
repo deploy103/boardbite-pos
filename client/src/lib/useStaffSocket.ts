@@ -31,6 +31,8 @@ export function useStaffSocket(onEvent: (event: string, payload: unknown) => voi
       "staff-call:requested",
       // FRONT 현장 거래 확정/수령/취소 — 거래 목록과 KDS가 다시 조회하도록 알린다.
       "counter-sale:recorded",
+      // 품절/판매 재개 — 메뉴를 보여주는 모든 화면이 다시 읽는다.
+      "menu:availability-changed",
     ];
     for (const ev of events) {
       socket.on(ev, (payload: unknown) => handlerRef.current(ev, payload));
