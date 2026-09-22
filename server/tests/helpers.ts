@@ -154,10 +154,10 @@ export async function createMenuItemWithOptions(price = 6000) {
   const menuItem = await prisma.menuItem.create({ data: { categoryId: category.id, name: "옵션메뉴", price } });
 
   const requiredSingle = await prisma.optionGroup.create({
-    data: { menuItemId: menuItem.id, name: "사이즈", required: true, multiSelect: false },
+    data: { menuItemId: menuItem.id, name: "사이즈", minSelect: 1, maxSelect: 1 },
   });
   const optionalMulti = await prisma.optionGroup.create({
-    data: { menuItemId: menuItem.id, name: "토핑", required: false, multiSelect: true },
+    data: { menuItemId: menuItem.id, name: "토핑", minSelect: 0, maxSelect: null },
   });
 
   const small = await prisma.optionChoice.create({ data: { groupId: requiredSingle.id, name: "보통", extraPrice: 0 } });

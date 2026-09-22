@@ -63,7 +63,7 @@ describe("FRONT 현장 결제 (인수 6, 8, 11~13, 16, 18)", () => {
 
     const udon = await createMenuItem({ name: "현장우동", price: 3000, channel: "BOTH" });
     const group = await prisma.optionGroup.create({
-      data: { menuItemId: udon.id, name: "추가 토핑", required: false, multiSelect: true },
+      data: { menuItemId: udon.id, name: "추가 토핑", minSelect: 0, maxSelect: null },
     });
     const egg = await prisma.optionChoice.create({ data: { groupId: group.id, name: "계란 추가", extraPrice: 500 } });
     const roulette = await createCounterOnlyItem("혼합룰렛", 500);
@@ -390,7 +390,7 @@ describe("FRONT 현장 결제 (인수 6, 8, 11~13, 16, 18)", () => {
   it("3. 같은 메뉴라도 옵션 조합이 다르면 별도 행으로 계산되고 각각 스냅샷이 남는다", async () => {
     const { agent: front } = await loginFront();
     const udon = await createMenuItem({ name: "조합구분우동", price: 3000, channel: "FRONT" });
-    const g = await prisma.optionGroup.create({ data: { menuItemId: udon.id, name: "토핑", multiSelect: true } });
+    const g = await prisma.optionGroup.create({ data: { menuItemId: udon.id, name: "토핑", minSelect: 0, maxSelect: null } });
     const egg = await prisma.optionChoice.create({ data: { groupId: g.id, name: "계란", extraPrice: 500 } });
 
     const quote = await front

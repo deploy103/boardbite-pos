@@ -22,6 +22,7 @@ const NEW_MIGRATIONS = [
   "20260921042345_coupon_redemption_on_table_sessions",
   "20260921114302_option_choice_stock_link",
   "20260922021825_inventory_items_and_item_cancellation",
+  "20260922053933_option_group_select_range",
 ];
 
 let workDir: string;
@@ -155,6 +156,9 @@ INSERT INTO "AuditLog" ("id","actorType","action","prevHash","hash","hashVersion
     const group = await db.optionGroup.findUniqueOrThrow({ where: { id: "g1" } });
     expect(group.isActive).toBe(true);
     expect(group.deletedAt).toBeNull();
+    // 옛 required=true / multiSelect=false 가 범위로 정확히 환산된다(동작 동일).
+    expect(group.minSelect).toBe(1);
+    expect(group.maxSelect).toBe(1);
 
     // 기존 선택지는 공용 물품 연결 없이(NULL), 품절 아님으로 복사돼 지금까지의 동작이 유지된다.
     const choice = await db.optionChoice.findUniqueOrThrow({ where: { id: "oc1" } });

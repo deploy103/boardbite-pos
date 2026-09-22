@@ -23,24 +23,24 @@ describe("메뉴 옵션 · 삭제 · 카테고리 (인수 1~5, 7)", () => {
 
     const ramen = await createMenuItem({ name: "라면", price: 3000, categoryId: category.id });
     const kind = await prisma.optionGroup.create({
-      data: { menuItemId: ramen.id, name: "종류", required: true, multiSelect: false },
+      data: { menuItemId: ramen.id, name: "종류", minSelect: 1, maxSelect: 1 },
     });
     const shin = await prisma.optionChoice.create({ data: { groupId: kind.id, name: "신라면", extraPrice: 0 } });
     const yuk = await prisma.optionChoice.create({ data: { groupId: kind.id, name: "육개장", extraPrice: 0 } });
 
     const udon = await createMenuItem({ name: "우동", price: 3000, categoryId: category.id });
     const request = await prisma.optionGroup.create({
-      data: { menuItemId: udon.id, name: "재료 요청", required: false, multiSelect: true },
+      data: { menuItemId: udon.id, name: "재료 요청", minSelect: 0, maxSelect: null },
     });
     const noScallion = await prisma.optionChoice.create({
       data: { groupId: request.id, name: "쪽파 제외", extraPrice: 0 },
     });
     const topping = await prisma.optionGroup.create({
-      data: { menuItemId: udon.id, name: "추가 토핑", required: false, multiSelect: true },
+      data: { menuItemId: udon.id, name: "추가 토핑", minSelect: 0, maxSelect: null },
     });
     const egg = await prisma.optionChoice.create({ data: { groupId: topping.id, name: "계란 추가", extraPrice: 500 } });
     const review = await prisma.optionGroup.create({
-      data: { menuItemId: udon.id, name: "리뷰 이벤트", required: false, multiSelect: false },
+      data: { menuItemId: udon.id, name: "리뷰 이벤트", minSelect: 0, maxSelect: 1 },
     });
     const join = await prisma.optionChoice.create({ data: { groupId: review.id, name: "참여", extraPrice: 0 } });
 
@@ -133,7 +133,7 @@ describe("메뉴 옵션 · 삭제 · 카테고리 (인수 1~5, 7)", () => {
   it("3. 활성 선택지가 없는 필수 그룹의 메뉴는 주문이 거부된다", async () => {
     const category = await prisma.menuCategory.create({ data: { name: `빈필수_${Date.now()}` } });
     const item = await createMenuItem({ name: "설정미완료메뉴", price: 1000, categoryId: category.id });
-    await prisma.optionGroup.create({ data: { menuItemId: item.id, name: "필수선택", required: true } });
+    await prisma.optionGroup.create({ data: { menuItemId: item.id, name: "필수선택", minSelect: 1, maxSelect: 1 } });
 
     const table = await prisma.table.create({ data: { number: 810004, publicSlug: `s${Date.now()}d` } });
     const { username, password } = await createStaff("FRONT");

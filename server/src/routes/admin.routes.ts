@@ -27,6 +27,7 @@ import {
   createClosingSettlement,
   ClosingError,
 } from "../services/closing.js";
+import { SelectRangeError, assertValidSelectRange } from "../services/optionRules.js";
 import {
   InventoryError,
   computeSoldOutImpact,
@@ -85,6 +86,10 @@ function sendDomainError(res: import("express").Response, err: unknown): boolean
   }
   if (err instanceof InventoryError) {
     res.status(err.status).json({ error: err.message, code: err.code });
+    return true;
+  }
+  if (err instanceof SelectRangeError) {
+    res.status(400).json({ error: err.message, code: "SELECT_RANGE_INVALID" });
     return true;
   }
   if (err instanceof CouponError || err instanceof CounterSaleError) {
@@ -585,13 +590,30 @@ adminRouter.delete("/menu/items/:id", async (req, res) => {
 
 // ---- 옵션 그룹 / 선택지 ----
 
+/**
+ * 옵션 그룹 저장. 선택 개수는 minSelect/maxSelect 한 쌍으로만 받는다.
+ * 편의를 위해 required/multiSelect로 보내도 받아주고 서버가 범위로 환산한다 —
+ * 두 값을 동시에 보내면 명시적인 범위가 이긴다.
+ */
 const optionGroupSchema = z.object({
   name: z.string().min(1).max(50),
+  minSelect: z.number().int().min(0).max(50).optional(),
+  maxSelect: z.number().int().min(1).max(50).nullable().optional(),
   required: z.boolean().optional(),
   multiSelect: z.boolean().optional(),
   sortOrder: z.number().int().optional(),
   isActive: z.boolean().optional(),
 });
+
+/** required/multiSelect 입력을 minSelect/maxSelect로 환산한다(명시적 범위가 우선). */
+function toSelectRange(input: z.infer<typeof optionGroupSchema> | Partial<z.infer<typeof optionGroupSchema>>) {
+  const data: { minSelect?: number; maxSelect?: number | null } = {};
+  if (input.required !== undefined) data.minSelect = input.required ? 1 : 0;
+  if (input.multiSelect !== undefined) data.maxSelect = input.multiSelect ? null : 1;
+  if (input.minSelect !== undefined) data.minSelect = input.minSelect;
+  if (input.maxSelect !== undefined) data.maxSelect = input.maxSelect;
+  return data;
+}
 
 adminRouter.post("/menu/items/:id/option-groups", async (req, res) => {
   const parsed = optionGroupSchema.safeParse(req.body);
@@ -604,7 +626,19 @@ adminRouter.post("/menu/items/:id/option-groups", async (req, res) => {
     res.status(404).json({ error: "존재하지 않는 메뉴예요." });
     return;
   }
-  const group = await prisma.optionGroup.create({ data: { menuItemId: item.id, ...parsed.data } });
+  const { required, multiSelect, minSelect, maxSelect, ...rest } = parsed.data;
+  void required;
+  void multiSelect;
+  void minSelect;
+  void maxSelect;
+  const range = { minSelect: 0, maxSelect: 1 as number | null, ...toSelectRange(parsed.data) };
+  try {
+    assertValidSelectRange(range);
+  } catch (err) {
+    if (!sendDomainError(res, err)) throw err;
+    return;
+  }
+  const group = await prisma.optionGroup.create({ data: { menuItemId: item.id, ...rest, ...range } });
   res.status(201).json({ group });
 });
 
@@ -614,8 +648,16 @@ adminRouter.patch("/menu/items/:menuItemId/option-groups/:groupId", async (req, 
     res.status(400).json({ error: "입력값이 올바르지 않습니다." });
     return;
   }
+  const { required, multiSelect, minSelect, maxSelect, ...rest } = parsed.data;
+  void required;
+  void multiSelect;
+  void minSelect;
+  void maxSelect;
   try {
-    const group = await updateOptionGroup(req.params.groupId, req.params.menuItemId, parsed.data);
+    const group = await updateOptionGroup(req.params.groupId, req.params.menuItemId, {
+      ...rest,
+      ...toSelectRange(parsed.data),
+    });
     res.json({ group });
   } catch (err) {
     if (!sendDomainError(res, err)) throw err;

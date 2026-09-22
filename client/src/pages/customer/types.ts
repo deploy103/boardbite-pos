@@ -14,8 +14,15 @@ export interface OptionChoice {
 export interface OptionGroup {
   id: string;
   name: string;
+  /** 최소 선택 개수(0이면 선택 사항). */
+  minSelect: number;
+  /** 최대 선택 개수. null이면 제한 없음. */
+  maxSelect: number | null;
+  /** 서버가 minSelect/maxSelect에서 파생해 내려주는 값 — 화면이 다시 계산하지 않는다. */
   required: boolean;
   multiSelect: boolean;
+  /** "필수", "1~2개", "최대 3개" 같은 사람이 읽는 규칙 문구. */
+  selectRangeLabel: string;
   choices: OptionChoice[];
 }
 

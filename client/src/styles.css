@@ -1781,3 +1781,9 @@ h1 {
     background: rgba(245, 166, 35, 0.12);
   }
 }
+
+/* 최대 개수를 채워 더 고를 수 없는 옵션 */
+.option-choice--capped {
+  opacity: 0.55;
+  cursor: not-allowed;
+}

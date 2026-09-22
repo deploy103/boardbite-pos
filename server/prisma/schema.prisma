@@ -226,17 +226,22 @@ model MenuItem {
 }
 
 model OptionGroup {
-  id          String    @id @default(cuid())
-  menuItemId  String
-  menuItem    MenuItem  @relation(fields: [menuItemId], references: [id])
-  name        String
-  required    Boolean   @default(false)
-  multiSelect Boolean   @default(false)
-  sortOrder   Int       @default(0)
+  id         String    @id @default(cuid())
+  menuItemId String
+  menuItem   MenuItem  @relation(fields: [menuItemId], references: [id])
+  name       String
+  /// 선택 개수 범위. required/multiSelect 두 불리언으로 표현하던 것을 이 한 쌍으로 통일했다 —
+  /// 두 축이 따로 있으면 "필수인데 최대 0개" 같은 모순을 막을 곳이 없고, 임의 범위도 표현할 수 없다.
+  ///   minSelect 0 = 선택 사항, 1 이상 = 필수(그 개수만큼 반드시 골라야 한다)
+  ///   maxSelect null = 제한 없음(복수 선택), 1 = 단일 선택, N = 최대 N개
+  /// 화면에 쓰는 required/multiSelect는 이 값에서 파생한다(services/optionRules.ts).
+  minSelect  Int       @default(0)
+  maxSelect  Int?
+  sortOrder  Int       @default(0)
   /// 비활성 그룹은 새 주문에서 표시/검증 대상이 아니다(필수 규칙도 적용하지 않는다).
-  isActive    Boolean   @default(true)
+  isActive   Boolean   @default(true)
   /// 논리 삭제. 삭제한 그룹의 필수 규칙은 새 주문에 적용하지 않는다(요구사항.md §3.1).
-  deletedAt   DateTime?
+  deletedAt  DateTime?
 
   choices OptionChoice[]
 

@@ -2,6 +2,7 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "../prisma.js";
 import type { Db } from "./billing.js";
 import { INVENTORY_SELECT, isSoldOut, soldOutReasonOf } from "./inventory.js";
+import { assertValidSelectRange, decorateSelectRange, type SelectRange } from "./optionRules.js";
 
 /**
  * 메뉴 판매 채널 / 제공 방식의 단일 정의(요구사항.md §4, §5.3, §5.4).
@@ -135,7 +136,7 @@ export function decorateChoice<T extends Parameters<typeof isSoldOut>[0] & { id:
 /** 메뉴 하나(와 그 옵션 전부)에 품절 상태를 붙인다. */
 export function decorateMenuItemOptions<
   T extends Parameters<typeof isSoldOut>[0] & {
-    optionGroups: { choices: (Parameters<typeof isSoldOut>[0] & { id: string })[] }[];
+    optionGroups: (SelectRange & { choices: (Parameters<typeof isSoldOut>[0] & { id: string })[] })[];
   },
 >(item: T) {
   return {
@@ -143,7 +144,11 @@ export function decorateMenuItemOptions<
     // 메뉴 자신의 품절도 공용 물품 기준으로 다시 계산해 내려보낸다.
     isSoldOut: isSoldOut(item),
     soldOutReason: soldOutReasonOf(item),
-    optionGroups: item.optionGroups.map((group) => ({ ...group, choices: group.choices.map(decorateChoice) })),
+    // 그룹에는 선택 개수 규칙의 파생값(required/multiSelect/문구)을 함께 실어 보낸다.
+    optionGroups: item.optionGroups.map((group) => ({
+      ...decorateSelectRange(group),
+      choices: group.choices.map(decorateChoice),
+    })),
   };
 }
 
@@ -154,8 +159,9 @@ export function decorateMenuItemOptions<
 export function blockedRequiredGroups(item: SellableMenuItem): string[] {
   // LIVE_OPTION_INCLUDE가 이미 활성 선택지만 담으므로, 비어 있으면 곧 "고를 수 있는 게 없다"는 뜻이다.
   // 선택지가 있어도 **전부 품절**이면 그 필수 그룹은 고를 수 없으므로 마찬가지로 판매 불가다.
+  // 최소 개수를 채울 만큼 고를 수 있는 선택지가 남지 않은 그룹 = 판매 불가.
   return item.optionGroups
-    .filter((group) => group.required && group.choices.every((choice) => isSoldOut(choice)))
+    .filter((group) => group.minSelect > 0 && group.choices.filter((c) => !isSoldOut(c)).length < group.minSelect)
     .map((group) => group.name);
 }
 
@@ -264,8 +270,8 @@ export async function deleteMenuCategory(id: string) {
 
 export interface OptionGroupWriteInput {
   name?: string;
-  required?: boolean;
-  multiSelect?: boolean;
+  minSelect?: number;
+  maxSelect?: number | null;
   sortOrder?: number;
   isActive?: boolean;
 }
@@ -276,6 +282,15 @@ export async function updateOptionGroup(groupId: string, menuItemId: string, inp
   if (!group || group.deletedAt || group.menuItemId !== menuItemId) {
     throw new MenuCatalogError("존재하지 않는 옵션 그룹이에요.", 404);
   }
+  // 저장 시점에 범위가 말이 되는지, 그리고 지금 남아 있는 선택지로 충족 가능한지 확인한다.
+  const activeChoices = await prisma.optionChoice.count({ where: { groupId, deletedAt: null, isActive: true } });
+  assertValidSelectRange(
+    {
+      minSelect: input.minSelect ?? group.minSelect,
+      maxSelect: input.maxSelect !== undefined ? input.maxSelect : group.maxSelect,
+    },
+    activeChoices,
+  );
   return prisma.optionGroup.update({ where: { id: groupId }, data: input });
 }
 
@@ -347,8 +362,8 @@ export async function listMenuForAdmin() {
         .filter(
           (group) =>
             group.isActive &&
-            group.required &&
-            !group.choices.some((c) => c.isActive && !isSoldOut(c)),
+            group.minSelect > 0 &&
+            group.choices.filter((c) => c.isActive && !isSoldOut(c)).length < group.minSelect,
         )
         .map((group) => group.name),
     })),
