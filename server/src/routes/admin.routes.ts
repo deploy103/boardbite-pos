@@ -28,6 +28,15 @@ import {
   ClosingError,
 } from "../services/closing.js";
 import {
+  InventoryError,
+  computeSoldOutImpact,
+  createInventoryItem,
+  deleteInventoryItem,
+  listInventoryItems,
+  setInventoryLink,
+  setSoldOut,
+} from "../services/inventory.js";
+import {
   MenuCatalogError,
   assertCookingFlags,
   deleteMenuCategory,
@@ -38,7 +47,6 @@ import {
   reorderMenuItems,
   reorderOptionChoices,
   reorderOptionGroups,
-  setChoiceStockLink,
   updateMenuItem,
   updateOptionChoice,
   updateOptionGroup,
@@ -73,6 +81,10 @@ function sendDomainError(res: import("express").Response, err: unknown): boolean
   }
   if (err instanceof MenuCatalogError) {
     res.status(err.status).json({ error: err.message });
+    return true;
+  }
+  if (err instanceof InventoryError) {
+    res.status(err.status).json({ error: err.message, code: err.code });
     return true;
   }
   if (err instanceof CouponError || err instanceof CounterSaleError) {
@@ -721,29 +733,85 @@ adminRouter.post("/menu/option-groups/:id/reorder-choices", async (req, res) => 
   }
 });
 
-const stockLinkSchema = z.object({ linkedMenuItemId: z.string().min(1).nullable() });
+// ---------- 공용 재고 물품 (요구사항 4절) ----------
+
+adminRouter.get("/inventory", async (_req, res) => {
+  res.json({ items: await listInventoryItems() });
+});
+
+const createInventorySchema = z.object({ name: z.string().min(1).max(60), note: z.string().max(200).optional() });
+
+adminRouter.post("/inventory", async (req, res) => {
+  const parsed = createInventorySchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "물품 이름을 입력해 주세요." });
+    return;
+  }
+  const item = await createInventoryItem(parsed.data.name, parsed.data.note, req.staff!.id);
+  res.status(201).json({ item });
+});
+
+adminRouter.delete("/inventory/:id", async (req, res) => {
+  try {
+    res.json({ item: await deleteInventoryItem(req.params.id, req.staff!.id) });
+  } catch (err) {
+    if (!sendDomainError(res, err)) throw err;
+  }
+});
+
+const linkSchema = z.object({
+  kind: z.enum(["MENU_ITEM", "OPTION_CHOICE"]),
+  id: z.string().min(1),
+  /** null이면 연결 해제. */
+  inventoryItemId: z.string().min(1).nullable(),
+});
 
 /**
- * 옵션 선택지 ↔ 재고 품목(메뉴) 연결.
- * 연결해 두면 그 메뉴를 품절 처리하는 순간 이 선택지도 손님 화면에서 자동으로 품절이 된다.
+ * 메뉴/옵션을 공용 물품에 연결하거나 분리한다(요구사항 4.4).
+ * 분리할 때는 물품의 현재 품절 상태를 항목이 물려받아, 연결을 끊었다고 갑자기 판매 재개되지 않는다.
  */
-adminRouter.post("/menu/option-groups/:groupId/choices/:choiceId/stock-link", async (req, res) => {
-  const parsed = stockLinkSchema.safeParse(req.body);
+adminRouter.post("/inventory/link", async (req, res) => {
+  const parsed = linkSchema.safeParse(req.body);
   if (!parsed.success) {
-    res.status(400).json({ error: "연결할 메뉴를 확인해 주세요." });
+    res.status(400).json({ error: "연결 대상을 확인해 주세요." });
     return;
   }
   try {
-    const choice = await setChoiceStockLink(req.params.choiceId, req.params.groupId, parsed.data.linkedMenuItemId);
-    await recordAuditLog({
-      actorType: "STAFF",
-      actorId: req.staff!.id,
-      action: "MENU_OPTION_STOCK_LINKED",
-      targetType: "OptionChoice",
-      targetId: choice.id,
-      metadata: { linkedMenuItemId: parsed.data.linkedMenuItemId },
-    });
-    res.json({ choice });
+    const { kind, id, inventoryItemId } = parsed.data;
+    res.json({ result: await setInventoryLink({ kind, id }, inventoryItemId, req.staff!.id) });
+  } catch (err) {
+    if (!sendDomainError(res, err)) throw err;
+  }
+});
+
+const soldOutSchema = z.object({
+  targets: z.array(z.object({ kind: z.enum(["MENU_ITEM", "OPTION_CHOICE"]), id: z.string().min(1) })).min(1).max(50),
+  soldOut: z.boolean(),
+});
+
+/** 품절/판매 재개. 공용 물품에 연결돼 있으면 그 물품을 쓰는 모든 항목에 동시에 반영된다. */
+adminRouter.post("/inventory/sold-out", async (req, res) => {
+  const parsed = soldOutSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "품절 대상을 확인해 주세요." });
+    return;
+  }
+  try {
+    res.json(await setSoldOut(parsed.data.targets, parsed.data.soldOut, req.staff!.id));
+  } catch (err) {
+    if (!sendDomainError(res, err)) throw err;
+  }
+});
+
+/** 품절 전 영향 범위 미리보기 — 아무 상태도 바꾸지 않는다. */
+adminRouter.post("/inventory/impact", async (req, res) => {
+  const parsed = soldOutSchema.pick({ targets: true }).safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "대상을 확인해 주세요." });
+    return;
+  }
+  try {
+    res.json({ impact: await computeSoldOutImpact(parsed.data.targets) });
   } catch (err) {
     if (!sendDomainError(res, err)) throw err;
   }

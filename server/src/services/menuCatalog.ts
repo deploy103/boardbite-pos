@@ -1,6 +1,7 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "../prisma.js";
 import type { Db } from "./billing.js";
+import { INVENTORY_SELECT, isSoldOut, soldOutReasonOf } from "./inventory.js";
 
 /**
  * 메뉴 판매 채널 / 제공 방식의 단일 정의(요구사항.md §4, §5.3, §5.4).
@@ -54,15 +55,16 @@ export function channelAllows(channel: string, target: "TABLE" | "FRONT"): boole
  * "화면에는 보이는데 주문하면 거부되는" 불일치가 생기지 않는다.
  */
 export const LIVE_OPTION_INCLUDE = {
+  ...INVENTORY_SELECT,
   optionGroups: {
     where: { deletedAt: null, isActive: true },
-    orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+    orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
     include: {
       choices: {
         where: { deletedAt: null, isActive: true },
-        orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
-        // 품절 전파를 판정하려면 연결된 재고 품목의 현재 상태가 필요하다.
-        include: { linkedMenuItem: { select: { id: true, name: true, isSoldOut: true, isActive: true, deletedAt: true } } },
+        orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
+        // 품절 판정은 연결된 공용 물품의 현재 상태를 본다.
+        include: INVENTORY_SELECT,
       },
     },
   },
@@ -70,14 +72,15 @@ export const LIVE_OPTION_INCLUDE = {
 
 /** 관리자 화면용 — 삭제되지 않은 그룹/선택지는 비활성이어도 모두 보여준다(편집 대상이므로). */
 export const ADMIN_OPTION_INCLUDE = {
+  ...INVENTORY_SELECT,
   optionGroups: {
     where: { deletedAt: null },
-    orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+    orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
     include: {
       choices: {
         where: { deletedAt: null },
-        orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
-        include: { linkedMenuItem: { select: { id: true, name: true, isSoldOut: true, isActive: true, deletedAt: true } } },
+        orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
+        include: INVENTORY_SELECT,
       },
     },
   },
@@ -93,7 +96,7 @@ export type SellableMenuItem = Prisma.MenuItemGetPayload<{ include: typeof LIVE_
 export async function listSellableMenu(target: "TABLE" | "FRONT", db: Db = prisma) {
   const categories = await db.menuCategory.findMany({
     where: { deletedAt: null },
-    orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+    orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
     include: {
       items: {
         where: {
@@ -101,7 +104,7 @@ export async function listSellableMenu(target: "TABLE" | "FRONT", db: Db = prism
           deletedAt: null,
           channel: target === "TABLE" ? { in: ["TABLE", "BOTH"] } : { in: ["FRONT", "BOTH"] },
         },
-        orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+        orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
         include: LIVE_OPTION_INCLUDE,
       },
     },
@@ -114,48 +117,33 @@ export async function listSellableMenu(target: "TABLE" | "FRONT", db: Db = prism
 
 
 // ---------------------------------------------------------------------------
-// 옵션 품절 전파 (재고 품목 연결)
+// 품절 표시 (공용 물품 기준)
 //
-// 선택지에 메뉴를 연결하면 그 메뉴의 품절 상태를 그대로 따라간다.
-// 연결 메뉴가 품절이거나, 판매 중지(isActive=false)이거나, 삭제됐으면 그 선택지는 고를 수 없다.
+// 품절 판정은 전부 inventory.ts의 isSoldOut()이 담당한다 — 메뉴든 옵션이든 같은 규칙이고,
+// 연결된 공용 물품이 있으면 그 상태 하나만 본다.
 //
 // "품절"과 "비활성"은 다르다:
 //   품절  = 손님에게 **보이지만** 회색으로 선택 불가. 재료가 떨어졌을 뿐 메뉴 구성은 그대로다.
 //   비활성 = 아예 보이지 않는다(운영에서 내린 선택지).
 // ---------------------------------------------------------------------------
 
-export interface StockLink {
-  linkedMenuItem?: { id: string; name: string; isSoldOut: boolean; isActive: boolean; deletedAt: Date | null } | null;
-}
-
-/** 연결된 재고 품목 때문에 지금 고를 수 없는 선택지인가. 연결이 없으면 항상 false. */
-export function isChoiceSoldOut(choice: StockLink): boolean {
-  const linked = choice.linkedMenuItem;
-  if (!linked) return false;
-  return linked.isSoldOut || !linked.isActive || linked.deletedAt !== null;
-}
-
 /** 손님/FRONT 화면에 내려보낼 형태로 선택지에 품절 상태를 붙인다. */
-export function decorateChoice<T extends StockLink & { id: string }>(choice: T) {
-  const soldOut = isChoiceSoldOut(choice);
-  return {
-    ...choice,
-    isSoldOut: soldOut,
-    /** 왜 품절인지 — 화면이 "계란 품절"처럼 구체적으로 안내할 수 있게 한다. */
-    soldOutReason: soldOut ? (choice.linkedMenuItem?.name ?? null) : null,
-  };
+export function decorateChoice<T extends Parameters<typeof isSoldOut>[0] & { id: string }>(choice: T) {
+  return { ...choice, isSoldOut: isSoldOut(choice), soldOutReason: soldOutReasonOf(choice) };
 }
 
-/** 메뉴 하나의 모든 옵션 선택지에 품절 상태를 붙인다. */
+/** 메뉴 하나(와 그 옵션 전부)에 품절 상태를 붙인다. */
 export function decorateMenuItemOptions<
-  T extends { optionGroups: { choices: (StockLink & { id: string })[] }[] },
+  T extends Parameters<typeof isSoldOut>[0] & {
+    optionGroups: { choices: (Parameters<typeof isSoldOut>[0] & { id: string })[] }[];
+  },
 >(item: T) {
   return {
     ...item,
-    optionGroups: item.optionGroups.map((group) => ({
-      ...group,
-      choices: group.choices.map(decorateChoice),
-    })),
+    // 메뉴 자신의 품절도 공용 물품 기준으로 다시 계산해 내려보낸다.
+    isSoldOut: isSoldOut(item),
+    soldOutReason: soldOutReasonOf(item),
+    optionGroups: item.optionGroups.map((group) => ({ ...group, choices: group.choices.map(decorateChoice) })),
   };
 }
 
@@ -167,7 +155,7 @@ export function blockedRequiredGroups(item: SellableMenuItem): string[] {
   // LIVE_OPTION_INCLUDE가 이미 활성 선택지만 담으므로, 비어 있으면 곧 "고를 수 있는 게 없다"는 뜻이다.
   // 선택지가 있어도 **전부 품절**이면 그 필수 그룹은 고를 수 없으므로 마찬가지로 판매 불가다.
   return item.optionGroups
-    .filter((group) => group.required && group.choices.every((choice) => isChoiceSoldOut(choice)))
+    .filter((group) => group.required && group.choices.every((choice) => isSoldOut(choice)))
     .map((group) => group.name);
 }
 
@@ -340,11 +328,11 @@ export async function deleteOptionChoice(choiceId: string, groupId: string) {
 export async function listMenuForAdmin() {
   const categories = await prisma.menuCategory.findMany({
     where: { deletedAt: null },
-    orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+    orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
     include: {
       items: {
         where: { deletedAt: null },
-        orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+        orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
         include: ADMIN_OPTION_INCLUDE,
       },
     },
@@ -360,7 +348,7 @@ export async function listMenuForAdmin() {
           (group) =>
             group.isActive &&
             group.required &&
-            !group.choices.some((c) => c.isActive && !isChoiceSoldOut(c)),
+            !group.choices.some((c) => c.isActive && !isSoldOut(c)),
         )
         .map((group) => group.name),
     })),
@@ -406,7 +394,7 @@ export function reorderMenuItems(categoryId: string, itemIds: string[]) {
       (
         await tx.menuItem.findMany({
           where: { categoryId, deletedAt: null },
-          orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+          orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
           select: { id: true },
         })
       ).map((r) => r.id),
@@ -422,7 +410,7 @@ export function reorderOptionGroups(menuItemId: string, groupIds: string[]) {
       (
         await tx.optionGroup.findMany({
           where: { menuItemId, deletedAt: null },
-          orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+          orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
           select: { id: true },
         })
       ).map((r) => r.id),
@@ -438,28 +426,10 @@ export function reorderOptionChoices(groupId: string, choiceIds: string[]) {
       (
         await tx.optionChoice.findMany({
           where: { groupId, deletedAt: null },
-          orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+          orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
           select: { id: true },
         })
       ).map((r) => r.id),
     (tx, id, sortOrder) => tx.optionChoice.update({ where: { id }, data: { sortOrder } }),
   );
-}
-
-/**
- * 옵션 선택지에 재고 품목(메뉴)을 연결하거나 끊는다.
- * 연결하면 그 메뉴가 품절될 때 이 선택지도 자동으로 품절이 된다.
- */
-export async function setChoiceStockLink(choiceId: string, groupId: string, linkedMenuItemId: string | null) {
-  const choice = await prisma.optionChoice.findUnique({ where: { id: choiceId } });
-  if (!choice || choice.deletedAt || choice.groupId !== groupId) {
-    throw new MenuCatalogError("존재하지 않는 옵션이에요.", 404);
-  }
-  if (linkedMenuItemId) {
-    const target = await prisma.menuItem.findUnique({ where: { id: linkedMenuItemId } });
-    if (!target || target.deletedAt) {
-      throw new MenuCatalogError("연결할 메뉴를 찾을 수 없어요.", 404);
-    }
-  }
-  return prisma.optionChoice.update({ where: { id: choiceId }, data: { linkedMenuItemId } });
 }

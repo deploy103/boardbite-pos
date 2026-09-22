@@ -90,151 +90,248 @@ describe("표시 순서 · 옵션 품절 전파", () => {
     expect((await admin.post(`/api/staff/admin/menu/categories/${category.id}/reorder-items`).set(...H).send({ ids: [a.id, a.id] })).status).toBe(400);
   });
 
-  it("연결한 재고 메뉴를 품절 처리하면 옵션도 자동으로 품절이 되고 주문이 거부된다", async () => {
+  /** 공용 물품을 만들고 메뉴/옵션을 거기에 연결한다(요구사항 4.4의 관리자 작업과 같은 경로). */
+  async function linkToInventory(
+    admin: Awaited<ReturnType<typeof loginAgent>>,
+    name: string,
+    targets: { kind: "MENU_ITEM" | "OPTION_CHOICE"; id: string }[],
+  ) {
+    const created = await admin.post("/api/staff/admin/inventory").set(...H).send({ name });
+    expect(created.status).toBe(201);
+    const inventoryItemId = created.body.item.id as string;
+    for (const target of targets) {
+      const linked = await admin.post("/api/staff/admin/inventory/link").set(...H).send({ ...target, inventoryItemId });
+      expect(linked.status).toBe(200);
+    }
+    return inventoryItemId;
+  }
+
+  it("4.1 공용 물품을 품절하면 그 물품을 쓰는 메뉴와 모든 옵션에 동시에 반영된다", async () => {
     const { agent: admin } = await loginAdmin();
+    // 계란 메뉴 + 라면의 '계란 추가' + 우동의 '계란 추가'가 같은 물품을 공유한다.
     const egg = await createMenuItem({ name: "계란", price: 500 });
-    const udon = await createMenuItem({ name: "품절전파우동", price: 3000 });
-    const group = (await admin.post(`/api/staff/admin/menu/items/${udon.id}/option-groups`).set(...H).send({ name: "추가 토핑", multiSelect: true })).body.group;
-    const choice = (await admin.post(`/api/staff/admin/menu/option-groups/${group.id}/choices`).set(...H).send({ name: "계란 추가", extraPrice: 500 })).body.choice;
-
-    // 계란 메뉴를 재고로 연결한다.
-    const linked = await admin
-      .post(`/api/staff/admin/menu/option-groups/${group.id}/choices/${choice.id}/stock-link`)
-      .set(...H)
-      .send({ linkedMenuItemId: egg.id });
-    expect(linked.status).toBe(200);
-
-    const { customer } = await seedTableCustomer(830003);
-    const readChoice = async () => {
-      const menu = await customer.get("/api/customer/menu").set(...H);
-      return (menu.body.categories as { items: { id: string; optionGroups: { choices: { id: string; isSoldOut: boolean; soldOutReason: string | null }[] }[] }[] }[])
-        .flatMap((x) => x.items)
-        .find((i) => i.id === udon.id)!
-        .optionGroups[0].choices[0];
+    const ramen = await createMenuItem({ name: "전파라면", price: 3000 });
+    const udon = await createMenuItem({ name: "전파우동", price: 3000 });
+    const mkChoice = async (menuId: string) => {
+      const g = (await admin.post(`/api/staff/admin/menu/items/${menuId}/option-groups`).set(...H).send({ name: "추가 토핑", multiSelect: true })).body.group;
+      const c = (await admin.post(`/api/staff/admin/menu/option-groups/${g.id}/choices`).set(...H).send({ name: "계란 추가", extraPrice: 500 })).body.choice;
+      return c.id as string;
     };
+    const ramenEgg = await mkChoice(ramen.id);
+    const udonEgg = await mkChoice(udon.id);
 
-    // 품절 전: 고를 수 있다.
-    expect((await readChoice()).isSoldOut).toBe(false);
+    await linkToInventory(admin, "계란", [
+      { kind: "MENU_ITEM", id: egg.id },
+      { kind: "OPTION_CHOICE", id: ramenEgg },
+      { kind: "OPTION_CHOICE", id: udonEgg },
+    ]);
+
+    // 메뉴 쪽에서 품절 처리한다.
+    const res = await admin
+      .post("/api/staff/admin/inventory/sold-out")
+      .set(...H)
+      .send({ targets: [{ kind: "MENU_ITEM", id: egg.id }], soldOut: true });
+    expect(res.status).toBe(200);
+
+    const { customer } = await seedTableCustomer(831001);
+    const menu = await customer.get("/api/customer/menu").set(...H);
+    const items = (menu.body.categories as { items: { id: string; isSoldOut: boolean; optionGroups: { choices: { id: string; isSoldOut: boolean }[] }[] }[] }[]).flatMap((c) => c.items);
+    // 계란 메뉴도, 두 메뉴의 계란 추가 옵션도 전부 품절이다.
+    expect(items.find((i) => i.id === egg.id)!.isSoldOut).toBe(true);
+    for (const [menuId, choiceId] of [[ramen.id, ramenEgg], [udon.id, udonEgg]] as const) {
+      const choice = items.find((i) => i.id === menuId)!.optionGroups[0].choices.find((c) => c.id === choiceId)!;
+      expect(choice.isSoldOut).toBe(true);
+    }
+
+    // 주문도 양쪽 다 거부된다.
+    for (const [menuId, choiceId] of [[ramen.id, ramenEgg], [udon.id, udonEgg]] as const) {
+      const blocked = await customer
+        .post("/api/customer/orders")
+        .set(...H)
+        .send({ idempotencyKey: `b-${choiceId}-${Date.now()}`, items: [{ menuItemId: menuId, quantity: 1, optionChoiceIds: [choiceId] }] });
+      expect(blocked.status).toBe(400);
+      expect(blocked.body.code).toBe("OPTION_SOLD_OUT");
+    }
+    const eggBlocked = await customer
+      .post("/api/customer/orders")
+      .set(...H)
+      .send({ idempotencyKey: `egg-${Date.now()}`, items: [{ menuItemId: egg.id, quantity: 1, optionChoiceIds: [] }] });
+    expect(eggBlocked.body.code).toBe("MENU_SOLD_OUT");
+  });
+
+  it("4.2 옵션 쪽에서 품절해도 같은 물품의 메뉴와 다른 옵션에 반영된다(양방향)", async () => {
+    const { agent: admin } = await loginAdmin();
+    const egg = await createMenuItem({ name: "양방향계란", price: 500 });
+    const ramen = await createMenuItem({ name: "양방향라면", price: 3000 });
+    const g = (await admin.post(`/api/staff/admin/menu/items/${ramen.id}/option-groups`).set(...H).send({ name: "토핑", multiSelect: true })).body.group;
+    const choice = (await admin.post(`/api/staff/admin/menu/option-groups/${g.id}/choices`).set(...H).send({ name: "계란 추가", extraPrice: 500 })).body.choice;
+    await linkToInventory(admin, "양방향계란", [
+      { kind: "MENU_ITEM", id: egg.id },
+      { kind: "OPTION_CHOICE", id: choice.id },
+    ]);
+
+    // **옵션 쪽**에서 품절 처리한다.
+    await admin.post("/api/staff/admin/inventory/sold-out").set(...H).send({ targets: [{ kind: "OPTION_CHOICE", id: choice.id }], soldOut: true });
+
+    const { customer } = await seedTableCustomer(831002);
+    const menu = await customer.get("/api/customer/menu").set(...H);
+    const items = (menu.body.categories as { items: { id: string; isSoldOut: boolean }[] }[]).flatMap((c) => c.items);
+    // 글로벌 메뉴에도 반영된다.
+    expect(items.find((i) => i.id === egg.id)!.isSoldOut).toBe(true);
+
+    // 판매 재개도 양방향으로 동작한다.
+    await admin.post("/api/staff/admin/inventory/sold-out").set(...H).send({ targets: [{ kind: "MENU_ITEM", id: egg.id }], soldOut: false });
+    const after = await customer.get("/api/customer/menu").set(...H);
+    const afterItems = (after.body.categories as { items: { id: string; isSoldOut: boolean; optionGroups: { choices: { isSoldOut: boolean }[] }[] }[] }[]).flatMap((c) => c.items);
+    expect(afterItems.find((i) => i.id === egg.id)!.isSoldOut).toBe(false);
+    expect(afterItems.find((i) => i.id === ramen.id)!.optionGroups[0].choices[0].isSoldOut).toBe(false);
+  });
+
+  it("4.3 옵션에만 있는 독립 품목도 품절할 수 있고 다른 항목에는 영향이 없다", async () => {
+    const { agent: admin } = await loginAdmin();
+    const udon = await createMenuItem({ name: "독립우동", price: 3000 });
+    const other = await createMenuItem({ name: "무관메뉴2", price: 1000 });
+    const g = (await admin.post(`/api/staff/admin/menu/items/${udon.id}/option-groups`).set(...H).send({ name: "요청", multiSelect: true })).body.group;
+    const scallion = (await admin.post(`/api/staff/admin/menu/option-groups/${g.id}/choices`).set(...H).send({ name: "쪽파 추가", extraPrice: 0 })).body.choice;
+
+    // 글로벌 메뉴로 존재하지 않는 품목이지만 품절 처리가 된다.
+    const res = await admin
+      .post("/api/staff/admin/inventory/sold-out")
+      .set(...H)
+      .send({ targets: [{ kind: "OPTION_CHOICE", id: scallion.id }], soldOut: true });
+    expect(res.status).toBe(200);
+
+    const { customer } = await seedTableCustomer(831003);
+    const blocked = await customer
+      .post("/api/customer/orders")
+      .set(...H)
+      .send({ idempotencyKey: `sc-${Date.now()}`, items: [{ menuItemId: udon.id, quantity: 1, optionChoiceIds: [scallion.id] }] });
+    expect(blocked.status).toBe(400);
+
+    // 다른 메뉴는 멀쩡하다.
     const ok = await customer
       .post("/api/customer/orders")
       .set(...H)
-      .send({ idempotencyKey: `before-${Date.now()}`, items: [{ menuItemId: udon.id, quantity: 1, optionChoiceIds: [choice.id] }] });
+      .send({ idempotencyKey: `ot-${Date.now()}`, items: [{ menuItemId: other.id, quantity: 1, optionChoiceIds: [] }] });
     expect(ok.status).toBe(201);
 
-    // 계란을 품절 처리한다.
-    await admin.patch(`/api/staff/admin/menu/items/${egg.id}`).set(...H).send({ isSoldOut: true });
-
-    // 옵션이 자동으로 품절이 되고 이유까지 내려온다(감춰지지 않고 보인다).
-    const after = await readChoice();
-    expect(after.isSoldOut).toBe(true);
-    expect(after.soldOutReason).toBe("계란");
-
-    // 품절 옵션을 담은 주문은 서버가 거부한다.
-    const blocked = await customer
-      .post("/api/customer/orders")
+    // 나중에 공용 물품으로 승격해 다른 항목과 연결할 수 있다.
+    const created = await admin.post("/api/staff/admin/inventory").set(...H).send({ name: "쪽파" });
+    const linked = await admin
+      .post("/api/staff/admin/inventory/link")
       .set(...H)
-      .send({ idempotencyKey: `after-${Date.now()}`, items: [{ menuItemId: udon.id, quantity: 1, optionChoiceIds: [choice.id] }] });
-    expect(blocked.status).toBe(400);
-    expect(blocked.body.error).toContain("품절");
-
-    // 옵션을 빼면 정상 주문된다 — 메뉴 자체가 막히는 건 아니다.
-    const withoutOption = await customer
-      .post("/api/customer/orders")
-      .set(...H)
-      .send({ idempotencyKey: `plain-${Date.now()}`, items: [{ menuItemId: udon.id, quantity: 1, optionChoiceIds: [] }] });
-    expect(withoutOption.status).toBe(201);
-
-    // 품절을 풀면 다시 고를 수 있다.
-    await admin.patch(`/api/staff/admin/menu/items/${egg.id}`).set(...H).send({ isSoldOut: false });
-    expect((await readChoice()).isSoldOut).toBe(false);
+      .send({ kind: "OPTION_CHOICE", id: scallion.id, inventoryItemId: created.body.item.id });
+    expect(linked.status).toBe(200);
+    // 연결해도 품절 상태가 유지된다(자체 플래그를 물품이 물려받는 것이 아니라, 연결 시점엔 물품이 기준).
+    const impact = await admin.post("/api/staff/admin/inventory/impact").set(...H).send({ targets: [{ kind: "OPTION_CHOICE", id: scallion.id }] });
+    expect(impact.body.impact[0].inventoryItem.name).toBe("쪽파");
   });
 
-  it("연결 메뉴를 삭제하거나 판매 중지해도 옵션이 품절로 막힌다", async () => {
+  it("4.4 연결 해제 시 물품의 품절 상태를 물려받고, 사용 중인 물품은 삭제되지 않는다", async () => {
     const { agent: admin } = await loginAdmin();
-    const stock = await createMenuItem({ name: "재고품목", price: 500 });
-    const main = await createMenuItem({ name: "연결확인메뉴", price: 2000 });
-    const group = (await admin.post(`/api/staff/admin/menu/items/${main.id}/option-groups`).set(...H).send({ name: "토핑", multiSelect: true })).body.group;
-    const choice = (await admin.post(`/api/staff/admin/menu/option-groups/${group.id}/choices`).set(...H).send({ name: "추가", extraPrice: 300 })).body.choice;
-    await admin.post(`/api/staff/admin/menu/option-groups/${group.id}/choices/${choice.id}/stock-link`).set(...H).send({ linkedMenuItemId: stock.id });
+    const item = await createMenuItem({ name: "해제확인메뉴", price: 1000 });
+    const inventoryItemId = await linkToInventory(admin, "해제확인물품", [{ kind: "MENU_ITEM", id: item.id }]);
+    await admin.post("/api/staff/admin/inventory/sold-out").set(...H).send({ targets: [{ kind: "MENU_ITEM", id: item.id }], soldOut: true });
 
-    // 판매 중지(isActive=false)만으로도 품절 취급된다.
-    await admin.patch(`/api/staff/admin/menu/items/${stock.id}`).set(...H).send({ isActive: false });
-    const { customer } = await seedTableCustomer(830004);
-    const blocked = await customer
-      .post("/api/customer/orders")
-      .set(...H)
-      .send({ idempotencyKey: `inactive-${Date.now()}`, items: [{ menuItemId: main.id, quantity: 1, optionChoiceIds: [choice.id] }] });
-    expect(blocked.status).toBe(400);
+    // 사용 중이면 삭제되지 않는다.
+    const blockedDelete = await admin.delete(`/api/staff/admin/inventory/${inventoryItemId}`).set(...H);
+    expect(blockedDelete.status).toBe(409);
+    expect(blockedDelete.body.code).toBe("INVENTORY_IN_USE");
+
+    // 연결을 끊으면 품절 상태를 물려받는다 — 갑자기 판매 재개되지 않는다.
+    await admin.post("/api/staff/admin/inventory/link").set(...H).send({ kind: "MENU_ITEM", id: item.id, inventoryItemId: null });
+    const stored = await prisma.menuItem.findUniqueOrThrow({ where: { id: item.id } });
+    expect(stored.inventoryItemId).toBeNull();
+    expect(stored.isSoldOut).toBe(true);
+
+    // 이제 삭제된다(논리 삭제).
+    const ok = await admin.delete(`/api/staff/admin/inventory/${inventoryItemId}`).set(...H);
+    expect(ok.status).toBe(200);
+    expect((await prisma.inventoryItem.findUniqueOrThrow({ where: { id: inventoryItemId } })).deletedAt).not.toBeNull();
   });
 
   it("필수 그룹의 선택지가 전부 품절이면 그 메뉴는 판매 불가로 표시되고 주문도 거부된다", async () => {
     const { agent: admin } = await loginAdmin();
-    const stock = await createMenuItem({ name: "유일재고", price: 500 });
-    const ramen = await createMenuItem({ name: "필수품절라면", price: 3000 });
+    const ramen = await createMenuItem({ name: "필수품절라면2", price: 3000 });
     const group = (await admin.post(`/api/staff/admin/menu/items/${ramen.id}/option-groups`).set(...H).send({ name: "종류", required: true })).body.group;
     const only = (await admin.post(`/api/staff/admin/menu/option-groups/${group.id}/choices`).set(...H).send({ name: "유일선택" })).body.choice;
-    await admin.post(`/api/staff/admin/menu/option-groups/${group.id}/choices/${only.id}/stock-link`).set(...H).send({ linkedMenuItemId: stock.id });
+    await admin.post("/api/staff/admin/inventory/sold-out").set(...H).send({ targets: [{ kind: "OPTION_CHOICE", id: only.id }], soldOut: true });
 
-    await admin.patch(`/api/staff/admin/menu/items/${stock.id}`).set(...H).send({ isSoldOut: true });
-
-    // 관리자 화면이 판매 불가로 경고한다.
     const adminMenu = await admin.get("/api/staff/admin/menu/categories").set(...H);
     const shown = (adminMenu.body.categories as { items: { id: string; blockedRequiredGroups: string[] }[] }[])
       .flatMap((c) => c.items)
       .find((i) => i.id === ramen.id)!;
     expect(shown.blockedRequiredGroups).toContain("종류");
 
-    // 서버도 주문을 거부한다.
-    const { customer } = await seedTableCustomer(830005);
+    const { customer } = await seedTableCustomer(831005);
     const res = await customer
       .post("/api/customer/orders")
       .set(...H)
-      .send({ idempotencyKey: `allsold-${Date.now()}`, items: [{ menuItemId: ramen.id, quantity: 1, optionChoiceIds: [] }] });
+      .send({ idempotencyKey: `allsold2-${Date.now()}`, items: [{ menuItemId: ramen.id, quantity: 1, optionChoiceIds: [] }] });
     expect(res.status).toBe(400);
     expect(res.body.error).toContain("품절");
   });
 
-  it("연결하지 않은 선택지는 다른 메뉴가 품절돼도 영향받지 않는다", async () => {
-    const { agent: admin } = await loginAdmin();
-    const unrelated = await createMenuItem({ name: "무관메뉴", price: 500 });
-    const main = await createMenuItem({ name: "무관확인메뉴", price: 2000 });
-    const group = (await admin.post(`/api/staff/admin/menu/items/${main.id}/option-groups`).set(...H).send({ name: "토핑", multiSelect: true })).body.group;
-    const choice = (await admin.post(`/api/staff/admin/menu/option-groups/${group.id}/choices`).set(...H).send({ name: "연결없음", extraPrice: 100 })).body.choice;
-
-    await admin.patch(`/api/staff/admin/menu/items/${unrelated.id}`).set(...H).send({ isSoldOut: true });
-
-    const { customer } = await seedTableCustomer(830006);
-    const res = await customer
-      .post("/api/customer/orders")
-      .set(...H)
-      .send({ idempotencyKey: `nolink-${Date.now()}`, items: [{ menuItemId: main.id, quantity: 1, optionChoiceIds: [choice.id] }] });
-    expect(res.status).toBe(201);
-  });
-
-  it("FRONT 현장 결제에서도 품절 옵션은 견적/확정이 거부된다", async () => {
+  it("FRONT 현장 결제에서도 품절 옵션은 견적/확정이 거부되고 메뉴에 품절이 실린다", async () => {
     const { agent: admin } = await loginAdmin();
     const { createStaff: mkStaff, loginAgent: login } = await import("./helpers.js");
     const { username, password } = await mkStaff("FRONT");
     const front = await login(username, password);
 
-    const stock = await createMenuItem({ name: "현장재고", price: 500, channel: "FRONT" });
-    const main = await createMenuItem({ name: "현장품절확인", price: 2000, channel: "FRONT", needsCooking: false, showInKitchen: false });
+    const main = await createMenuItem({ name: "현장품절확인2", price: 2000, channel: "FRONT", needsCooking: false, showInKitchen: false });
     const group = (await admin.post(`/api/staff/admin/menu/items/${main.id}/option-groups`).set(...H).send({ name: "토핑", multiSelect: true })).body.group;
     const choice = (await admin.post(`/api/staff/admin/menu/option-groups/${group.id}/choices`).set(...H).send({ name: "추가", extraPrice: 300 })).body.choice;
-    await admin.post(`/api/staff/admin/menu/option-groups/${group.id}/choices/${choice.id}/stock-link`).set(...H).send({ linkedMenuItemId: stock.id });
-    await admin.patch(`/api/staff/admin/menu/items/${stock.id}`).set(...H).send({ isSoldOut: true });
+    await admin.post("/api/staff/admin/inventory/sold-out").set(...H).send({ targets: [{ kind: "OPTION_CHOICE", id: choice.id }], soldOut: true });
 
     const cart = { items: [{ menuItemId: main.id, quantity: 1, optionChoiceIds: [choice.id] }] };
     expect((await front.post("/api/staff/front/counter/quote").set(...H).send(cart)).status).toBe(400);
     expect(
-      (await front.post("/api/staff/front/counter/confirm").set(...H).send({ ...cart, idempotencyKey: `so-${Date.now()}`, methodCode: "CARD" })).status,
+      (await front.post("/api/staff/front/counter/confirm").set(...H).send({ ...cart, idempotencyKey: `so2-${Date.now()}`, methodCode: "CARD" })).status,
     ).toBe(400);
 
-    // FRONT 메뉴 응답에도 품절 상태가 실린다.
     const menu = await front.get("/api/staff/front/counter/menu").set(...H);
     const shown = (menu.body.categories as { items: { id: string; optionGroups: { choices: { isSoldOut: boolean }[] }[] }[] }[])
       .flatMap((c) => c.items)
       .find((i) => i.id === main.id)!;
     expect(shown.optionGroups[0].choices[0].isSoldOut).toBe(true);
+  });
+
+  it("권한 없는 역할은 품절/판매 재개를 할 수 없다", async () => {
+    const item = await createMenuItem({ name: "권한품절", price: 1000 });
+    const body = { targets: [{ kind: "MENU_ITEM", id: item.id }], soldOut: true };
+    for (const role of ["SERVING"] as const) {
+      const { username, password } = await createStaff(role);
+      const agent = await loginAgent(username, password);
+      expect((await agent.post("/api/staff/admin/inventory/sold-out").set(...H).send(body)).status).toBe(403);
+      expect((await agent.post("/api/staff/pos/sold-out").set(...H).send(body)).status).toBe(403);
+    }
+    // 비로그인
+    const { default: request } = await import("supertest");
+    const { app } = await import("./helpers.js");
+    expect((await request(app).post("/api/staff/admin/inventory/sold-out").set(...H).send(body)).status).toBe(401);
+  });
+
+  it("같은 물품을 동시에 품절 처리해도 마지막 상태가 일관된다", async () => {
+    const { agent: admin } = await loginAdmin();
+    const a = await createMenuItem({ name: "동시품절A", price: 1000 });
+    const b = await createMenuItem({ name: "동시품절B", price: 1000 });
+    const inventoryItemId = await linkToInventory(admin, "동시물품", [
+      { kind: "MENU_ITEM", id: a.id },
+      { kind: "MENU_ITEM", id: b.id },
+    ]);
+
+    const results = await Promise.all([
+      admin.post("/api/staff/admin/inventory/sold-out").set(...H).send({ targets: [{ kind: "MENU_ITEM", id: a.id }], soldOut: true }),
+      admin.post("/api/staff/admin/inventory/sold-out").set(...H).send({ targets: [{ kind: "MENU_ITEM", id: b.id }], soldOut: true }),
+    ]);
+    expect(results.every((r) => r.status === 200)).toBe(true);
+
+    // 두 요청이 같은 물품을 건드렸고 최종 상태는 품절 하나로 일관된다.
+    const stored = await prisma.inventoryItem.findUniqueOrThrow({ where: { id: inventoryItemId } });
+    expect(stored.isSoldOut).toBe(true);
+    expect(stored.soldOutAt).not.toBeNull();
+    // 두 메뉴 모두 품절로 보인다(각자 플래그를 복사하지 않으므로 어긋날 수 없다).
+    const items = await prisma.menuItem.findMany({ where: { id: { in: [a.id, b.id] } }, include: { inventoryItem: true } });
+    expect(items.every((i) => i.inventoryItem!.isSoldOut)).toBe(true);
   });
 });

@@ -4,7 +4,15 @@ import { recordAuditLogBestEffort } from "./auditLog.js";
 import { appEvents, RealtimeEvent } from "../realtime.js";
 import type { OrderStatus } from "../types/domain.js";
 import { maybeAutoSettleTableSession } from "./tableSession.js";
-import { LIVE_OPTION_INCLUDE, channelAllows, isChoiceSoldOut, servingModeOf, type ServingMode } from "./menuCatalog.js";
+import { LIVE_OPTION_INCLUDE, channelAllows, servingModeOf, type ServingMode } from "./menuCatalog.js";
+import {
+  INVENTORY_SELECT,
+  applySoldOutInTx,
+  emitAvailabilityChanged,
+  isSoldOut,
+  type SoldOutTarget,
+} from "./inventory.js";
+import { withWriteConflictRetry } from "./writeConflict.js";
 import type { Db } from "./billing.js";
 
 export interface CreateOrderItemInput {
@@ -14,24 +22,30 @@ export interface CreateOrderItemInput {
 }
 
 export interface CreateOrderInput {
+  /**
+   * 클라이언트가 화면에 표시했던 합계(요구사항 5절 — 요청 가격과 서버 계산 가격 일치 검증).
+   * 서버는 이 값을 **계산에 쓰지 않는다.** 서버가 다시 계산한 금액과 다르면 주문을 거절해,
+   * 손님 화면이 옛 가격을 보고 있었다는 사실을 조용히 넘기지 않는다.
+   */
+  expectedTotal?: number;
   tableSessionId: string;
   clientIdempotencyKey: string;
   items: CreateOrderItemInput[];
   note?: string;
 }
 
-export class OrderValidationError extends Error {}
-
-/** 옵션 품절 전파를 판정하려면 선택지마다 연결된 재고 품목의 현재 상태가 필요하다. */
-const STOCK_LINK_SELECT = {
-  linkedMenuItem: { select: { id: true, name: true, isSoldOut: true, isActive: true, deletedAt: true } },
-} as const;
+export class OrderValidationError extends Error {
+  /** 화면이 분기할 수 있는 기계용 오류 코드(요구사항 5절). */
+  constructor(message: string, public code = "ORDER_INVALID") {
+    super(message);
+  }
+}
 
 type MenuItemWithOptions = Prisma.MenuItemGetPayload<{
-  include: { optionGroups: { include: { choices: { include: typeof STOCK_LINK_SELECT } } } };
+  include: { optionGroups: { include: { choices: { include: typeof INVENTORY_SELECT } } } };
 }>;
 type ChoiceWithGroup = Prisma.OptionChoiceGetPayload<{
-  include: { group: true } & typeof STOCK_LINK_SELECT;
+  include: { group: true } & typeof INVENTORY_SELECT;
 }>;
 
 export interface OrderItemOptionSnapshot {
@@ -71,12 +85,12 @@ export function validateItemOptions(
     const groupIsLive = choice ? menuItem.optionGroups.some((g) => g.id === choice.groupId) : false;
     if (!choice || !choice.isActive || choice.deletedAt || !groupIsLive || choice.group.menuItemId !== menuItem.id) {
       // 삭제/비활성 그룹의 선택지는 "메뉴에 속한 활성 옵션"이 아니므로 동일하게 거부한다.
-      throw new OrderValidationError("올바르지 않은 옵션이 포함되어 있습니다.");
+      throw new OrderValidationError("올바르지 않은 옵션이 포함되어 있습니다.", "OPTION_INVALID");
     }
-    if (isChoiceSoldOut(choice)) {
+    if (isSoldOut(choice)) {
       // 재고 품목이 품절된 옵션. 화면에는 회색으로 보이지만 서버가 최종적으로 막는다
       // (손님이 품절 직전에 담아둔 장바구니를 그대로 제출하는 경우).
-      throw new OrderValidationError(`${choice.name}은(는) 품절되었어요. 다른 옵션을 선택해 주세요.`);
+      throw new OrderValidationError(`${choice.name}은(는) 품절되었어요. 다른 옵션을 선택해 주세요.`, "OPTION_SOLD_OUT");
     }
     selectedByGroup.set(choice.groupId, (selectedByGroup.get(choice.groupId) ?? 0) + 1);
     options.push({
@@ -95,7 +109,7 @@ export function validateItemOptions(
     if (group.required && count === 0) {
       // 고를 수 있는 선택지가 하나도 없는 필수 그룹은 "선택 불가"가 아니라 "판매 불가"다
       // (요구사항.md §3.1) — 조용히 통과시키면 필수 규칙이 사실상 사라진다.
-      const selectable = group.choices.filter((choice) => choice.isActive && !isChoiceSoldOut(choice));
+      const selectable = group.choices.filter((choice) => choice.isActive && !isSoldOut(choice));
       const allSoldOut = group.choices.length > 0 && selectable.length === 0;
       throw new OrderValidationError(
         selectable.length > 0
@@ -150,7 +164,7 @@ export async function resolveOrderLines(
     ? await db.optionChoice.findMany({
         where: { id: { in: allOptionChoiceIds } },
         // 연결된 재고 품목이 품절이면 그 옵션도 주문할 수 없다 — 확정 시점에 다시 확인한다.
-        include: { group: true, ...STOCK_LINK_SELECT },
+        include: { group: true, ...INVENTORY_SELECT },
       })
     : [];
   const optionChoiceMap = new Map(optionChoices.map((o) => [o.id, o]));
@@ -167,8 +181,10 @@ export async function resolveOrderLines(
           : `${menuItem.name}은(는) 테이블 주문 전용 상품이에요.`,
       );
     }
-    if (menuItem.isSoldOut) {
-      throw new OrderValidationError(`${menuItem.name}은(는) 품절되었습니다.`);
+    // 공용 물품에 연결된 메뉴는 물품 상태를 봐야 한다 — 원시 컬럼만 보면
+    // "물품을 품절했는데 메뉴는 그대로 주문되는" 구멍이 생긴다.
+    if (isSoldOut(menuItem)) {
+      throw new OrderValidationError(`${menuItem.name}은(는) 품절되었습니다.`, "MENU_SOLD_OUT");
     }
     if (!Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 50) {
       throw new OrderValidationError("수량이 올바르지 않습니다.");
@@ -204,6 +220,16 @@ export async function createOrder(input: CreateOrderInput) {
   if (existing) return existing;
 
   const lines = await resolveOrderLines(input.items, "TABLE");
+
+  if (input.expectedTotal !== undefined) {
+    const serverTotal = lines.reduce((sum, line) => sum + line.lineTotal, 0);
+    if (serverTotal !== input.expectedTotal) {
+      throw new OrderValidationError(
+        `금액이 바뀌었어요. 화면을 새로고침한 뒤 다시 주문해 주세요(표시 ${input.expectedTotal.toLocaleString()}원 / 실제 ${serverTotal.toLocaleString()}원).`,
+        "PRICE_MISMATCH",
+      );
+    }
+  }
 
   try {
     const order = await prisma.$transaction(async (tx) => {
@@ -329,6 +355,10 @@ async function applyTransition(
 /**
  * 테이블 주문에만 의미가 있는 자동 정산 평가. 현장 거래 주문(tableSessionId=null)은
  * 테이블 상태 머신을 전혀 건드리지 않는다(요구사항.md §5.4 — 테이블 배정/자동 종료 로직 실행 금지).
+ *
+ * **취소/거부 경로에서는 이 함수를 부르지 않는다.** 주문 상태 전이와 테이블 상태 전이는 서로 다른
+ * 관심사이고, 주방에서 주문을 취소한 것이 테이블을 닫는 근거가 될 수는 없다.
+ * 서빙 완료(markServed)만 "완납 후 마지막 미서빙 주문이 끝났다"는 정산 완료 신호이므로 남겨 둔다.
  */
 async function settleIfTableOrder(order: { tableSessionId: string | null }) {
   if (!order.tableSessionId) return;
@@ -340,9 +370,9 @@ export function acceptOrder(orderId: string, staffId: string) {
 }
 
 export async function rejectOrder(orderId: string, staffId: string, reason: string) {
-  const order = await applyTransition(orderId, ["NEW"], "REJECTED", { rejectReason: reason }, staffId, "ORDER_REJECTED", { reason });
-  await settleIfTableOrder(order);
-  return order;
+  // 거부는 주문 하나의 상태만 바꾼다 — 테이블 상태는 건드리지 않는다.
+  // 거부로 미수금이 0이 되더라도 테이블을 닫는 것은 FRONT의 명시적인 종료/정산 작업이다.
+  return applyTransition(orderId, ["NEW"], "REJECTED", { rejectReason: reason }, staffId, "ORDER_REJECTED", { reason });
 }
 
 export function startPreparing(orderId: string, staffId: string) {
@@ -365,20 +395,150 @@ export function revertServedToReady(orderId: string, staffId: string) {
   return applyTransition(orderId, ["SERVED"], "READY", { servedAt: null }, staffId, "ORDER_SERVED_REVERTED");
 }
 
-export async function cancelOrder(orderId: string, staffId: string, reason: string) {
-  const order = await applyTransition(
-    orderId,
-    ["NEW", "ACCEPTED", "PREPARING"],
-    "CANCELLED",
-    { cancelReason: reason, cancelledAt: new Date() },
-    staffId,
-    "ORDER_CANCELLED",
-    { reason },
+/** 주방 취소 사유(요구사항 2절). 화면 문구는 CANCEL_REASON_LABEL이 담당한다. */
+export const CANCEL_REASON_CODES = ["OUT_OF_STOCK", "CUSTOMER_REQUEST", "CANNOT_COOK", "WRONG_ORDER", "OTHER"] as const;
+export type CancelReasonCode = (typeof CANCEL_REASON_CODES)[number];
+
+export const CANCEL_REASON_LABEL: Record<CancelReasonCode, string> = {
+  OUT_OF_STOCK: "재료 소진",
+  CUSTOMER_REQUEST: "고객 요청",
+  CANNOT_COOK: "조리 불가",
+  WRONG_ORDER: "잘못된 주문",
+  OTHER: "기타",
+};
+
+export interface CancelOrderInput {
+  orderId: string;
+  staffId: string;
+  reasonCode: CancelReasonCode;
+  note?: string;
+  /** 비우면 주문 전체 취소. 채우면 **그 항목만** 취소한다(요구사항 1절). */
+  orderItemIds?: string[];
+  /** 재료 소진일 때 함께 품절 처리할 대상(요구사항 2절). 같은 트랜잭션에서 처리된다. */
+  soldOutTargets?: SoldOutTarget[];
+}
+
+/**
+ * 주문/주문 항목 취소(요구사항 1·2절).
+ *
+ * 한 트랜잭션 안에서 처리한다: 항목/주문 취소 → 사유·메모 저장 → 선택한 품목 품절 →
+ * 감사 로그. 품절 처리가 실패하면 취소도 함께 롤백되므로 "주문만 취소되고 품절은 안 된" 상태가 없다.
+ *
+ * **테이블 상태는 건드리지 않는다.** 취소는 주문의 일이고 테이블 종료는 FRONT의 명시적 작업이다.
+ *
+ * 멱등성: 이미 취소된 항목/주문에 다시 요청해도 상태가 깨지지 않고 현재 상태를 그대로 돌려준다.
+ */
+export async function cancelOrder(input: CancelOrderInput) {
+  const { orderId, staffId, reasonCode, note } = input;
+  const reasonLabel = CANCEL_REASON_LABEL[reasonCode];
+  const reasonText = note?.trim() ? `${reasonLabel} · ${note.trim()}` : reasonLabel;
+
+  const result = await withWriteConflictRetry(() =>
+    prisma.$transaction(
+      async (tx) => {
+        const order = await tx.order.findUnique({ where: { id: orderId }, include: { items: true } });
+        if (!order) throw new OrderStateError("존재하지 않는 주문입니다.", 404);
+
+        const targetItemIds = input.orderItemIds?.length
+          ? input.orderItemIds
+          : order.items.map((item) => item.id);
+
+        // 요청한 항목이 정말 이 주문의 것인지 확인한다(다른 주문 항목을 끼워 넣어 취소할 수 없다).
+        const ownIds = new Set(order.items.map((i) => i.id));
+        const foreign = targetItemIds.filter((id) => !ownIds.has(id));
+        if (foreign.length > 0) throw new OrderStateError("이 주문에 없는 항목이 포함돼 있어요.", 400);
+
+        const cancelWholeOrder = targetItemIds.length === order.items.length;
+        const now = new Date();
+
+        if (cancelWholeOrder) {
+          // 전체 취소는 주문 상태 전이로 처리한다. 이미 CANCELLED면 count=0이 되어 멱등하게 넘어간다.
+          if (!["NEW", "ACCEPTED", "PREPARING", "CANCELLED"].includes(order.status)) {
+            throw new OrderStateError(`현재 상태(${order.status})에서는 취소할 수 없어요.`);
+          }
+          await tx.order.updateMany({
+            where: { id: orderId, status: { in: ["NEW", "ACCEPTED", "PREPARING"] } },
+            data: {
+              status: "CANCELLED",
+              cancelledAt: now,
+              cancelReason: reasonText,
+              cancelReasonCode: reasonCode,
+              cancelNote: note?.slice(0, 200) ?? null,
+              cancelledById: staffId,
+            },
+          });
+        }
+
+        // 항목 단위 취소는 항상 기록한다(전체 취소일 때도 어떤 항목이 취소됐는지 남는다).
+        await tx.orderItem.updateMany({
+          where: { id: { in: targetItemIds }, cancelledAt: null },
+          data: { cancelledAt: now, cancelledById: staffId, cancelReason: reasonText },
+        });
+
+        // 부분 취소로 **남은 항목이 모두 취소됐다면** 주문 자체도 취소로 맞춘다.
+        if (!cancelWholeOrder) {
+          const liveCount = await tx.orderItem.count({ where: { orderId, cancelledAt: null } });
+          if (liveCount === 0) {
+            await tx.order.updateMany({
+              where: { id: orderId, status: { in: ["NEW", "ACCEPTED", "PREPARING"] } },
+              data: {
+                status: "CANCELLED",
+                cancelledAt: now,
+                cancelReason: reasonText,
+                cancelReasonCode: reasonCode,
+                cancelNote: note?.slice(0, 200) ?? null,
+                cancelledById: staffId,
+              },
+            });
+          }
+        }
+
+        // 재료 소진 품절 처리 — 실패하면 위의 취소까지 전부 롤백된다.
+        const soldOut = input.soldOutTargets?.length
+          ? await applySoldOutInTx(tx, input.soldOutTargets, true, staffId)
+          : null;
+
+        const updated = await tx.order.findUniqueOrThrow({
+          where: { id: orderId },
+          include: { items: { include: { options: true } } },
+        });
+        return { order: updated, soldOut, cancelledItemIds: targetItemIds };
+      },
+      { maxWait: 10_000, timeout: 20_000 },
+    ),
   );
-  // 취소로 인해 미수금이 음수(환불 필요)가 될 수 있다 — computeBill()이 그대로 드러내며 별도 플래그는 두지 않는다.
-  // 현장 거래는 이미 선결제이므로 여기서 자동 환불하지 않고, FRONT 거래 목록이 "환불 필요"로 표시한다(요구사항.md §5.4).
-  await settleIfTableOrder(order);
-  return order;
+
+  await recordAuditLogBestEffort({
+    actorType: "STAFF",
+    actorId: staffId,
+    action: "ORDER_CANCELLED",
+    targetType: "Order",
+    targetId: orderId,
+    metadata: {
+      tableSessionId: result.order.tableSessionId,
+      counterSaleId: result.order.counterSaleId,
+      reasonCode,
+      reason: reasonLabel,
+      note: note ?? null,
+      cancelledOrderItemIds: result.cancelledItemIds,
+      cancelledItems: result.order.items
+        .filter((i) => result.cancelledItemIds.includes(i.id))
+        .map((i) => `${i.nameSnapshot}×${i.quantity}`),
+      orderStatusAfter: result.order.status,
+      soldOut: result.soldOut,
+    },
+  });
+
+  appEvents.emit(RealtimeEvent.OrderStatusChanged, {
+    tableSessionId: result.order.tableSessionId,
+    counterSaleId: result.order.counterSaleId,
+    orderId: result.order.id,
+    status: result.order.status,
+  });
+  if (result.soldOut) emitAvailabilityChanged();
+
+  // 테이블 상태는 의도적으로 건드리지 않는다 — 위 함수 주석 참고.
+  return result.order;
 }
 
 /** KDS 보드용 — 활성 주문(NEW/ACCEPTED/PREPARING/READY)을 상태별로 묶어 반환한다. */

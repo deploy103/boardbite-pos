@@ -160,6 +160,10 @@ export default function CustomerApp() {
     socket.on(REALTIME_EVENTS.OrderStatusChanged, () => {
       void refreshOrdersAndBill();
     });
+    // 주방/관리자가 품절 처리하면 손님 메뉴를 즉시 다시 읽는다 — 품절 배지가 바로 뜬다.
+    socket.on(REALTIME_EVENTS.MenuAvailabilityChanged, () => {
+      void loadMenu();
+    });
     socket.on(REALTIME_EVENTS.PaymentRecorded, () => {
       void loadBill();
     });
@@ -223,9 +227,36 @@ export default function CustomerApp() {
     }
     setSubmitting(true);
     setOrderError(null);
+
+    /**
+     * 담은 뒤에 품절된 항목이 있으면 확정 단계에서 막고 알려 준다(요구사항 6절).
+     * 서버도 같은 검증을 하지만, 여기서 먼저 잡아야 손님이 "왜 안 되는지" 바로 알 수 있다.
+     * 최신 메뉴를 다시 읽고 판단하므로 화면이 오래됐어도 정확하다.
+     */
+    try {
+      await loadMenu();
+    } catch {
+      // 메뉴를 못 읽어도 주문은 시도한다 — 최종 판단은 어차피 서버가 한다.
+    }
+    const soldOutNames = cart
+      .filter((line) => {
+        const fresh = (categories ?? []).flatMap((c) => c.items).find((i) => i.id === line.menuItem.id);
+        if (!fresh || fresh.isSoldOut) return true;
+        const choices = fresh.optionGroups.flatMap((g) => g.choices);
+        return line.optionChoiceIds.some((id) => choices.find((c) => c.id === id)?.isSoldOut ?? false);
+      })
+      .map((line) => line.menuItem.name);
+    if (soldOutNames.length > 0) {
+      setOrderError(`${[...new Set(soldOutNames)].join(", ")}이(가) 방금 품절됐어요. 장바구니에서 빼고 다시 주문해 주세요.`);
+      setSubmitting(false);
+      return;
+    }
+
     try {
       await api.post("/api/customer/orders", {
         idempotencyKey: idempotencyKeyRef.current,
+        // 화면에 보여준 합계를 같이 보낸다. 서버 계산과 다르면 주문이 거절된다(요구사항 5절).
+        expectedTotal: cart.reduce((sum, line) => sum + lineUnitPrice(line) * line.quantity, 0),
         items: cart.map((line) => ({
           menuItemId: line.menuItem.id,
           quantity: line.quantity,

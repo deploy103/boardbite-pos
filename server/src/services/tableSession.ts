@@ -330,6 +330,17 @@ export async function maybeAutoSettleTableSession(tableSessionId: string): Promi
   }
 
   const bill = await computeBill(tableSessionId);
+
+  /**
+   * 정산할 것이 애초에 없으면 자동 종료 대상이 아니다.
+   *
+   * 예전에는 이 가드가 없어서 **주문을 전부 취소하면 테이블이 닫혔다** — 취소된 주문은 청구액에서
+   * 빠지므로 총액 0 / 미수금 0 / 미서빙 0 이 되어 "완납하고 다 서빙된 테이블"과 구분되지 않았다.
+   * 자동 종료는 "받을 돈을 다 받았다"의 결과여야지 "받을 게 없어졌다"의 결과이면 안 된다.
+   * 취소로 테이블을 비우고 싶으면 FRONT에서 명시적으로 테이블 종료를 눌러야 한다.
+   */
+  if (bill.totalAmount === 0 && bill.paidAmount === 0) return "NO_CHANGE";
+
   if (bill.remainingAmount !== 0) {
     // 취소 등으로 다시 미수금이 생긴 경우 PAID_PENDING_SERVICE였다면 ACTIVE로 되돌린다.
     if (session.status === "PAID_PENDING_SERVICE") {

@@ -32,7 +32,8 @@ export async function computeBill(tableSessionId: string, db: Db = prisma): Prom
   // 같은 기준으로 맞춘다.
   const orders = await db.order.findMany({
     where: { tableSessionId, status: { notIn: ["CANCELLED", "REJECTED"] } },
-    include: { items: { include: { options: true } } },
+    // 항목 단위로 취소된 것도 청구하지 않는다(요구사항 1절 — 주문 항목만 취소).
+    include: { items: { where: { cancelledAt: null }, include: { options: true } } },
   });
 
   let totalAmount = 0;
@@ -155,7 +156,7 @@ export async function computeCounterSaleLedger(counterSaleId: string, db: Db = p
   // (자동 환불은 하지 않는다 — 요구사항.md §5.4).
   const orders = await db.order.findMany({
     where: { counterSaleId, status: { notIn: ["CANCELLED", "REJECTED"] } },
-    include: { items: { include: { options: true } } },
+    include: { items: { where: { cancelledAt: null }, include: { options: true } } },
   });
 
   let orderAmount = 0;

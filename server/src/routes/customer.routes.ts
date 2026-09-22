@@ -149,6 +149,8 @@ customerRouter.get("/orders", requireTableSession, async (req, res) => {
 const createOrderSchema = z.object({
   idempotencyKey: z.string().min(1).max(100),
   note: z.string().max(200).optional(),
+  /** 손님 화면이 보고 있던 합계. 서버 계산과 다르면 주문을 거절한다(요구사항 5절). */
+  expectedTotal: z.number().int().min(0).optional(),
   items: z
     .array(
       z.object({
@@ -217,11 +219,13 @@ customerRouter.post("/orders", requireTableSession, requireOrderableSession, asy
       clientIdempotencyKey: parsed.data.idempotencyKey,
       items: parsed.data.items,
       note: parsed.data.note,
+      expectedTotal: parsed.data.expectedTotal,
     });
     res.status(201).json({ order });
   } catch (err) {
     if (err instanceof OrderValidationError) {
-      res.status(400).json({ error: err.message });
+      // code는 화면이 분기할 수 있는 기계용 값이다(요구사항 5절 — 이해 가능한 오류 코드).
+      res.status(400).json({ error: err.message, code: err.code });
       return;
     }
     throw err;

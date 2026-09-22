@@ -73,7 +73,7 @@ export async function computeClosingPreview(since?: Date, until?: Date): Promise
     prisma.payment.findMany({ where: createdAtRange, select: { kind: true, amount: true, method: true } }),
     prisma.order.findMany({
       where: { ...createdAtRange, status: { notIn: ["CANCELLED", "REJECTED"] } },
-      include: { items: { include: { options: true } } },
+      include: { items: { where: { cancelledAt: null }, include: { options: true } } },
     }),
     prisma.paymentMethod.findMany({ where: { isCash: true }, select: { code: true } }),
     prisma.table.findMany({ where: { status: { in: ["OPEN", "SETTLING"] } }, orderBy: { number: "asc" } }),

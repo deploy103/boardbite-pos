@@ -42,6 +42,9 @@ model StaffUser {
   loginAttempts       LoginAttempt[]
   closingSettlements  ClosingSettlement[]
 
+  inventorySoldOut      InventoryItem[]    @relation("InventorySoldOutBy")
+  cancelledOrders       Order[]            @relation("OrderCancelledBy")
+  cancelledOrderItems   OrderItem[]        @relation("OrderItemCancelledBy")
   counterSalesCreated   CounterSale[]      @relation("CounterSaleCreatedBy")
   counterSalesCancelled CounterSale[]      @relation("CounterSaleCancelledBy")
   couponBatches         CouponBatch[]
@@ -103,9 +106,9 @@ model TableSession {
   closedAt    DateTime?
   closeReason String?
 
-  gameUsages     TableGameUsage[]
-  orders         Order[]
-  payments       Payment[]
+  gameUsages        TableGameUsage[]
+  orders            Order[]
+  payments          Payment[]
   callRequests      StaffCallRequest[]
   deviceSessions    CustomerDeviceSession[]
   couponRedemptions CouponRedemption[]
@@ -153,6 +156,29 @@ model TableGameUsage {
   @@index([tableSessionId])
 }
 
+/// 공용 재고 물품(요구사항 4절). 메뉴와 옵션 선택지가 **같은 물품을 참조**하면 품절 상태를 공유한다.
+/// 계란 메뉴, 라면의 '계란 추가', 우동의 '계란 추가'가 같은 InventoryItem을 가리키면
+/// 어느 화면에서 품절 처리하든 전부 동시에 막힌다 — 품절 값을 복사해 두지 않기 때문에 불일치가 생길 수 없다.
+model InventoryItem {
+  id        String  @id @default(cuid())
+  name      String
+  note      String?
+  isSoldOut Boolean @default(false)
+
+  soldOutAt   DateTime?
+  soldOutById String?
+  soldOutBy   StaffUser? @relation("InventorySoldOutBy", fields: [soldOutById], references: [id])
+
+  createdAt DateTime  @default(now())
+  /// 논리 삭제. 참조 중인 물품은 물리 삭제하지 않는다(요구사항 4.4).
+  deletedAt DateTime?
+
+  menuItems     MenuItem[]
+  optionChoices OptionChoice[]
+
+  @@index([deletedAt])
+}
+
 model MenuCategory {
   id        String    @id @default(cuid())
   name      String
@@ -164,35 +190,39 @@ model MenuCategory {
 }
 
 model MenuItem {
-  id            String       @id @default(cuid())
-  categoryId    String
-  category      MenuCategory @relation(fields: [categoryId], references: [id])
-  name          String
-  description   String?
-  price         Int
-  imageUrl      String?
-  isActive      Boolean      @default(true)
-  isSoldOut     Boolean      @default(false)
+  id              String         @id @default(cuid())
+  categoryId      String
+  category        MenuCategory   @relation(fields: [categoryId], references: [id])
+  name            String
+  description     String?
+  price           Int
+  imageUrl        String?
+  isActive        Boolean        @default(true)
+  /// 공용 물품에 연결되지 않은 메뉴의 자체 품절 상태. 연결된 경우에는 물품 상태가 기준이며
+  /// 이 값은 읽지 않는다(품절 값이 두 곳에 복사되어 어긋나는 구조를 만들지 않기 위해서다).
+  isSoldOut       Boolean        @default(false)
+  /// 공용 재고 물품 연결(선택). 연결하면 품절 판정과 품절 처리가 모두 그 물품을 기준으로 이뤄진다.
+  inventoryItemId String?
+  inventoryItem   InventoryItem? @relation(fields: [inventoryItemId], references: [id])
   /// 조리가 필요한 상품인가. true면 KDS 조리 대기를 만들고 READY→수령/서빙 흐름을 탄다.
-  needsCooking  Boolean      @default(true)
+  needsCooking    Boolean        @default(true)
   /// KDS 보드에 표시하는가. needsCooking=true면 반드시 true여야 한다(서버가 모순 조합을 거부).
   /// 둘 다 false = "현장 즉시 제공" 상품(룰렛/보드게임/닌텐도 등) — 조리 대기를 만들지 않는다.
-  showInKitchen Boolean      @default(true)
+  showInKitchen   Boolean        @default(true)
   /// 판매 채널(요구사항.md §4): TABLE(테이블 전용) | FRONT(FRONT 전용) | BOTH(공통).
   /// 기존 메뉴는 migration에서 BOTH로 채워 기존 테이블 판매 가능성을 그대로 유지한다.
-  channel       String       @default("BOTH")
-  sortOrder     Int          @default(0)
-  createdAt     DateTime     @default(now())
+  channel         String         @default("BOTH")
+  sortOrder       Int            @default(0)
+  createdAt       DateTime       @default(now())
   /// 논리 삭제. 새 판매 목록에서 사라지지만 과거 주문/결제/쿠폰 이력은 그대로 남는다.
-  deletedAt     DateTime?
+  deletedAt       DateTime?
 
   optionGroups  OptionGroup[]
   orderItems    OrderItem[]
   couponTargets CouponBatchTarget[]
-  /// 이 메뉴를 재고 품목으로 연결한 옵션 선택지들. 이 메뉴가 품절되면 전부 따라서 품절된다.
-  stockLinkedChoices OptionChoice[] @relation("OptionChoiceStock")
 
   @@index([categoryId])
+  @@index([inventoryItemId])
 }
 
 model OptionGroup {
@@ -223,39 +253,45 @@ model OptionChoice {
   sortOrder  Int         @default(0)
   deletedAt  DateTime?
 
-  /// 이 선택지가 실제로 소비하는 재고 품목(메뉴). 연결하면 **그 메뉴의 품절 상태를 그대로 따라간다**
-  /// — 계란을 품절 처리하면 우동의 '계란 추가' 옵션도 자동으로 품절이 된다(요구사항: 품절 자동 전파).
-  /// 연결은 선택이며, 연결하지 않은 선택지는 품절 개념 없이 활성/비활성으로만 관리한다.
-  /// 품절은 "보이지만 고를 수 없음"이고 비활성(isActive=false)은 "아예 보이지 않음"으로 서로 다르다.
-  linkedMenuItemId String?
-  linkedMenuItem   MenuItem? @relation("OptionChoiceStock", fields: [linkedMenuItemId], references: [id])
+  /// 공용 물품에 연결되지 않은 선택지의 자체 품절 상태(요구사항 4.3 — 옵션에만 존재하는 독립 품목).
+  /// 연결된 경우에는 물품 상태가 기준이며 이 값은 읽지 않는다.
+  isSoldOut       Boolean        @default(false)
+  /// 공용 재고 물품 연결(선택). 메뉴와 같은 물품을 가리키면 품절 상태를 공유한다.
+  inventoryItemId String?
+  inventoryItem   InventoryItem? @relation(fields: [inventoryItemId], references: [id])
 
   orderItemOptions OrderItemOption[]
 
   @@index([groupId])
-  @@index([linkedMenuItemId])
+  @@index([inventoryItemId])
 }
 
 /// 주문 소유자는 TableSession(테이블 후불) 또는 CounterSale(FRONT 현장 결제) **둘 중 정확히 하나**다.
 /// 가짜 TableSession을 만들지 않기 위한 구조이며, migration SQL에 CHECK 제약으로 못박아 두었다
 /// (요구사항.md §8, §12.1 — "정확히 하나만 존재하도록 데이터/서버 제약을 설계한다").
 model Order {
-  id             String        @id @default(cuid())
-  tableSessionId String?
-  tableSession   TableSession? @relation(fields: [tableSessionId], references: [id])
-  counterSaleId  String?
-  counterSale    CounterSale?  @relation(fields: [counterSaleId], references: [id])
-  status         String        @default("NEW") // NEW | ACCEPTED | PREPARING | READY | SERVED | REJECTED | CANCELLED
-  idempotencyKey String        @unique
-  note           String?
-  rejectReason   String?
-  cancelReason   String?
-  createdAt      DateTime      @default(now())
-  acceptedAt     DateTime?
-  preparingAt    DateTime?
-  readyAt        DateTime?
-  servedAt       DateTime?
-  cancelledAt    DateTime?
+  id               String        @id @default(cuid())
+  tableSessionId   String?
+  tableSession     TableSession? @relation(fields: [tableSessionId], references: [id])
+  counterSaleId    String?
+  counterSale      CounterSale?  @relation(fields: [counterSaleId], references: [id])
+  status           String        @default("NEW") // NEW | ACCEPTED | PREPARING | READY | SERVED | REJECTED | CANCELLED
+  idempotencyKey   String        @unique
+  note             String?
+  rejectReason     String?
+  cancelReason     String?
+  /// 취소 사유 코드(요구사항 2절): OUT_OF_STOCK | CUSTOMER_REQUEST | CANNOT_COOK | WRONG_ORDER | OTHER.
+  /// cancelReason은 사람이 읽는 문구, 이 값은 통계/분기용 기계 값이다.
+  cancelReasonCode String?
+  cancelNote       String?
+  cancelledById    String?
+  cancelledBy      StaffUser?    @relation("OrderCancelledBy", fields: [cancelledById], references: [id])
+  createdAt        DateTime      @default(now())
+  acceptedAt       DateTime?
+  preparingAt      DateTime?
+  readyAt          DateTime?
+  servedAt         DateTime?
+  cancelledAt      DateTime?
 
   items OrderItem[]
 
@@ -275,6 +311,13 @@ model OrderItem {
   /// 주문 시점의 제공 방식 스냅샷: KITCHEN(주방 조리/전달) | COUNTER(현장 즉시 제공).
   /// 기존 행은 migration에서 KITCHEN으로 채운다 — 지금까지의 모든 주문이 주방을 거쳤다.
   servingMode  String   @default("KITCHEN")
+
+  /// 항목 단위 취소(요구사항 1절 — "선택한 주문 또는 주문 항목만 취소").
+  /// 취소된 항목은 청구액에서 빠지지만 행은 남는다 — 무엇을 취소했는지가 이력에 보여야 하기 때문이다.
+  cancelledAt   DateTime?
+  cancelledById String?
+  cancelledBy   StaffUser? @relation("OrderItemCancelledBy", fields: [cancelledById], references: [id])
+  cancelReason  String?
 
   options     OrderItemOption[]
   allocations PaymentAllocation[]
@@ -522,8 +565,8 @@ model CouponRedemption {
 
   /// 사용처는 FRONT 현장 거래 또는 테이블 후불 정산 중 **정확히 하나**다(migration의 CHECK 제약).
   /// Order/Payment의 소유자 규칙과 같은 모양을 유지해 집계·환불 로직이 한 갈래로 흐르게 한다.
-  counterSaleId String?
-  counterSale   CounterSale? @relation(fields: [counterSaleId], references: [id])
+  counterSaleId  String?
+  counterSale    CounterSale?  @relation(fields: [counterSaleId], references: [id])
   tableSessionId String?
   tableSession   TableSession? @relation(fields: [tableSessionId], references: [id])
 

@@ -7,6 +7,7 @@ import { useOperationSettings } from "../../lib/useOperationSettings.js";
 import { playBeep } from "../../lib/beep.js";
 import OrderCard, { orderSourceLabel, type KdsOrder } from "./OrderCard.js";
 import ReasonModal from "./ReasonModal.js";
+import CancelOrderModal from "./CancelOrderModal.js";
 
 type Board = Record<"NEW" | "ACCEPTED" | "PREPARING" | "READY", KdsOrder[]>;
 type Tab = "board" | "history" | "cancelled" | "soldout";
@@ -34,7 +35,9 @@ export default function PosHome() {
   const [tab, setTab] = useState<Tab>("board");
   const [board, setBoard] = useState<Board>({ NEW: [], ACCEPTED: [], PREPARING: [], READY: [] });
   const [muted, setMuted] = useState(() => localStorage.getItem("boardbite_pos_muted") === "1");
-  const [modal, setModal] = useState<{ kind: "reject" | "cancel"; orderId: string } | null>(null);
+  const [modal, setModal] = useState<{ kind: "reject"; orderId: string } | null>(null);
+  /** 취소는 사유 코드와 품절 선택이 필요해 전용 모달을 쓴다(요구사항 2절). */
+  const [cancelTarget, setCancelTarget] = useState<KdsOrder | null>(null);
   const [error, setError] = useState<string | null>(null);
   const prevNewCount = useRef(0);
 
@@ -62,6 +65,7 @@ export default function PosHome() {
   }, [board.NEW.length, muted]);
 
   useStaffSocket(() => {
+    // 품절/판매 재개(menu:availability-changed)를 포함해 어떤 신호든 보드를 다시 읽는다.
     loadBoard();
   });
 
@@ -88,9 +92,7 @@ export default function PosHome() {
 
   async function confirmModal(reason: string) {
     if (!modal) return;
-    const path =
-      modal.kind === "reject" ? `/api/staff/pos/orders/${modal.orderId}/reject` : `/api/staff/pos/orders/${modal.orderId}/cancel`;
-    await runAction(path, { reason });
+    await runAction(`/api/staff/pos/orders/${modal.orderId}/reject`, { reason });
     closeModal();
   }
 
@@ -159,7 +161,7 @@ export default function PosHome() {
                       )}
                       {status === "READY" && <span className="badge">서빙 대기</span>}
                       {(status === "NEW" || status === "ACCEPTED" || status === "PREPARING") && (
-                        <button className="btn-secondary" onClick={() => setModal({ kind: "cancel", orderId: order.id })}>
+                        <button className="btn-secondary" onClick={() => setCancelTarget(order)}>
                           취소
                         </button>
                       )}
@@ -176,9 +178,19 @@ export default function PosHome() {
       {tab === "cancelled" && <HistoryPanel forcedStatus="CANCELLED" />}
       {tab === "soldout" && <SoldOutPanel />}
 
+      {cancelTarget && (
+        <CancelOrderModal
+          order={cancelTarget}
+          onCancel={() => setCancelTarget(null)}
+          onDone={() => {
+            setCancelTarget(null);
+            loadBoard();
+          }}
+        />
+      )}
       {modal && (
         <ReasonModal
-          title={modal.kind === "reject" ? "주문을 거부할까요?" : "주문을 취소할까요?"}
+          title="주문을 거부할까요?"
           onCancel={closeModal}
           onConfirm={confirmModal}
         />

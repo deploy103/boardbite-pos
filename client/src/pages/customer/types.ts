@@ -24,7 +24,10 @@ export interface MenuItem {
   name: string;
   price: number;
   description: string | null;
+  /** 공용 물품 연결까지 반영한 최종 품절 상태(서버가 계산해 내려준다). */
   isSoldOut: boolean;
+  /** 어떤 공용 물품 때문에 품절인지. 연결이 없으면 null. */
+  soldOutReason?: string | null;
   optionGroups: OptionGroup[];
 }
 
@@ -122,4 +125,6 @@ export const REALTIME_EVENTS = {
   OrderStatusChanged: "order:status-changed",
   TableClosed: "table:closed",
   PaymentRecorded: "payment:recorded",
+  /** 품절/판매 재개 — 손님 메뉴를 다시 읽어야 한다. */
+  MenuAvailabilityChanged: "menu:availability-changed",
 } as const;

@@ -78,7 +78,7 @@ describe("POS/KDS 주문 상태 전이", () => {
     const res = await pos
       .post(`/api/staff/pos/orders/${orderId}/cancel`)
       .set("X-BoardBite-Client", "1")
-      .send({ reason: "손님 요청" });
+      .send({ reasonCode: "CUSTOMER_REQUEST" });
     expect(res.status).toBe(409);
   });
 
