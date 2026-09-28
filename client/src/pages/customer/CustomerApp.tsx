@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useParams, useSearchParams } from "react-router-dom";
 import { io, type Socket } from "socket.io-client";
 import { api, ApiError, errorMessage, reportSocketState } from "../../lib/api.js";
 import ConnectionBanner from "../../components/ConnectionBanner.js";
@@ -21,9 +21,12 @@ const ORDERS_POLL_INTERVAL_MS = 20000;
 
 export default function CustomerApp() {
   const { slug } = useParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [phase, setPhase] = useState<Phase>("loading");
   const [closedMessage, setClosedMessage] = useState("");
   const [tableNumber, setTableNumber] = useState<number | null>(null);
+  const [autoJoining, setAutoJoining] = useState(false);
+  const [autoJoinError, setAutoJoinError] = useState<string | null>(null);
 
   const [categories, setCategories] = useState<MenuCategory[] | null>(null);
   const [menuError, setMenuError] = useState<string | null>(null);
@@ -125,6 +128,35 @@ export default function CustomerApp() {
         setTableNumber(data.tableNumber);
         if (!data.joined) {
           // 코드 입력 전에는 메뉴/주문 API를 부르지 않는다 — 서버도 401로 막는다.
+          const codeFromUrl = searchParams.get("code");
+          if (codeFromUrl) {
+            // QR에 코드를 담아 보냈다면(요청 성공/실패와 무관하게) 주소창에서 즉시 지운다 —
+            // 노출 시간을 최소화한다. history.replaceState 대신 setSearchParams를 쓰는 이유는
+            // React Router의 내부 location 상태를 함께 갱신해 불일치를 막기 위함이다.
+            setSearchParams(
+              (prev) => {
+                const next = new URLSearchParams(prev);
+                next.delete("code");
+                return next;
+              },
+              { replace: true },
+            );
+            setAutoJoining(true);
+            try {
+              await api.post(`/api/customer/join/${slug}`, { joinCode: codeFromUrl });
+              if (cancelled) return;
+              setPhase("open");
+              void refreshAll();
+              return;
+            } catch (err) {
+              if (cancelled) return;
+              setAutoJoinError(
+                errorMessage(err, "자동 입장에 실패했어요. 아래에 코드를 직접 입력해 주세요."),
+              );
+            } finally {
+              if (!cancelled) setAutoJoining(false);
+            }
+          }
           setPhase("join");
           return;
         }
@@ -278,7 +310,9 @@ export default function CustomerApp() {
   if (phase === "loading") {
     return (
       <div className="page">
-        <div className="loading-center">테이블 정보를 확인하고 있어요...</div>
+        <div className="loading-center">
+          {autoJoining ? "입장 코드를 확인하고 있어요..." : "테이블 정보를 확인하고 있어요..."}
+        </div>
       </div>
     );
   }
@@ -305,6 +339,7 @@ export default function CustomerApp() {
         <JoinCodeGate
           slug={slug!}
           tableNumber={tableNumber}
+          initialError={autoJoinError}
           onJoined={() => {
             setPhase("open");
             void refreshAll();

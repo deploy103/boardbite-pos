@@ -52,6 +52,29 @@ describe("테이블 OPEN/CLOSE 엣지 케이스 (HTTP API)", () => {
     const res = await front.post("/api/staff/front/tables/nonexistent-table-id/close").set("X-BoardBite-Client", "1").send({});
     expect(res.status).toBe(404);
   });
+
+  /**
+   * 손님용 세션 전용 QR(FRONT 화면에서 즉석 생성)이 `/t/<publicSlug>?code=...`를 인코딩하려면
+   * 목록 응답에 publicSlug가 있어야 한다. AVAILABLE/OPEN 두 분기 매핑 모두에서 누락되지 않는지 확인한다.
+   */
+  it("테이블 목록 응답에 publicSlug가 세션 유무와 무관하게 포함된다", async () => {
+    const table = await createBareTable();
+    const { username, password } = await createStaff("FRONT");
+    const front = await loginAgent(username, password);
+
+    const beforeOpen = await front.get("/api/staff/front/tables");
+    expect(beforeOpen.status).toBe(200);
+    const rowBeforeOpen = beforeOpen.body.tables.find((t: { id: string }) => t.id === table.id);
+    expect(rowBeforeOpen.publicSlug).toBe(table.publicSlug);
+
+    const openRes = await front.post(`/api/staff/front/tables/${table.id}/open`).set("X-BoardBite-Client", "1").send({});
+    expect(openRes.status).toBe(201);
+
+    const afterOpen = await front.get("/api/staff/front/tables");
+    const rowAfterOpen = afterOpen.body.tables.find((t: { id: string }) => t.id === table.id);
+    expect(rowAfterOpen.publicSlug).toBe(table.publicSlug);
+    expect(rowAfterOpen.session).toBeTruthy();
+  });
 });
 
 describe("테이블 OPEN/CLOSE 엣지 케이스 (서비스 함수 직접 호출)", () => {

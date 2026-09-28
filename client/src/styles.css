@@ -1381,6 +1381,12 @@ h1 {
   letter-spacing: 0.35em;
 }
 
+.join-code-qr {
+  margin: var(--space-3) auto;
+  display: flex;
+  justify-content: center;
+}
+
 /* 마감 정산 요약 */
 .closing-grid {
   display: grid;
