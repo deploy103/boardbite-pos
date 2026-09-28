@@ -90,3 +90,37 @@ export async function joinAsCustomer(browser: Browser, slug: string, joinCode: s
   await expect(page.getByRole("tab", { name: "메뉴" })).toBeVisible({ timeout: 10_000 });
   return page;
 }
+
+/**
+ * openTableViaUi와 동일하게 테이블을 열지만, "확인했어요"를 누르기 전에 FRONT 화면이 즉석
+ * 생성한 세션 전용 QR의 인코딩 URL(`.join-code-qr`의 data-qr-url)도 함께 읽어 돌려준다.
+ */
+export async function openTableViaUiWithQr(
+  frontPage: Page,
+  tableNumber: number,
+): Promise<{ joinCode: string; qrUrl: string }> {
+  const tableCard = frontPage.locator(".table-card", { hasText: `${tableNumber}번` });
+  await expect(tableCard).toBeVisible();
+  await tableCard.getByRole("button", { name: "자리 배정" }).click();
+  await tableCard.getByRole("button", { name: "테이블 열기" }).click();
+
+  const codeCard = frontPage.locator(".join-code-card");
+  await expect(codeCard).toBeVisible({ timeout: 10_000 });
+  const joinCode = (await codeCard.locator(".join-code-value").innerText()).trim();
+  expect(joinCode).toMatch(/^\d{6}$/);
+
+  const qrUrl = await codeCard.locator(".join-code-qr").getAttribute("data-qr-url");
+  expect(qrUrl).toBeTruthy();
+
+  await codeCard.getByRole("button", { name: "확인했어요" }).click();
+  return { joinCode, qrUrl: qrUrl! };
+}
+
+/** 손님 브라우저로 (코드가 이미 담긴) QR 주소를 직접 열어, 수동 입력 없이 바로 입장시킨다. */
+export async function joinAsCustomerViaQr(browser: Browser, qrUrl: string): Promise<Page> {
+  const ctx = await browser.newContext({ ...customerDevice });
+  const page = await ctx.newPage();
+  await page.goto(qrUrl);
+  await expect(page.getByRole("tab", { name: "메뉴" })).toBeVisible({ timeout: 10_000 });
+  return page;
+}

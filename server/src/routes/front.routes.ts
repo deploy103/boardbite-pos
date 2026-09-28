@@ -62,6 +62,7 @@ frontRouter.get("/tables", async (_req, res) => {
           status: table.status,
           ordersLocked: table.ordersLocked,
           paymentsLocked: table.paymentsLocked,
+          publicSlug: table.publicSlug,
         };
       }
       const bill = await computeBill(activeSession.id);
@@ -72,6 +73,7 @@ frontRouter.get("/tables", async (_req, res) => {
         status: table.status,
         ordersLocked: table.ordersLocked,
         paymentsLocked: table.paymentsLocked,
+        publicSlug: table.publicSlug,
         session: {
           id: activeSession.id,
           status: activeSession.status,

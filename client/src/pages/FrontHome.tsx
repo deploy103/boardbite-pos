@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import { QRCodeCanvas } from "qrcode.react";
 import { api, errorMessage, ApiError } from "../lib/api.js";
 import { useStaffMe } from "../lib/useStaffMe.js";
 import ConnectionBanner from "../components/ConnectionBanner.js";
@@ -10,6 +11,7 @@ interface TableRow {
   number: number;
   name: string | null;
   status: "DISABLED" | "AVAILABLE" | "OPEN" | "SETTLING";
+  publicSlug: string;
   session?: { id: string; guestCount: number | null; openedAt: string; gameEndsAt: string | null };
   bill?: { totalAmount: number; paidAmount: number; remainingAmount: number };
 }
@@ -32,6 +34,7 @@ interface IssuedCode {
   tableNumber: number;
   tableSessionId: string;
   joinCode: string;
+  publicSlug: string;
   openedAt: string;
   gameEndsAt: string | null;
 }
@@ -92,6 +95,7 @@ export default function FrontHome() {
         tableNumber: table.number,
         tableSessionId: result.session.id,
         joinCode: result.joinCode,
+        publicSlug: table.publicSlug,
         openedAt: result.session.openedAt,
         gameEndsAt: result.gameEndsAt,
       });
@@ -101,7 +105,7 @@ export default function FrontHome() {
     }
   }
 
-  async function handleRotateCode(tableSessionId: string, tableNumber: number) {
+  async function handleRotateCode(tableSessionId: string, tableNumber: number, publicSlug: string) {
     try {
       setError(null);
       const result = await api.post(`/api/staff/front/table-sessions/${tableSessionId}/rotate-join-code`, {});
@@ -109,6 +113,7 @@ export default function FrontHome() {
         tableNumber,
         tableSessionId,
         joinCode: result.joinCode,
+        publicSlug,
         openedAt: new Date().toISOString(),
         gameEndsAt: null,
       });
@@ -137,6 +142,10 @@ export default function FrontHome() {
   }
 
   if (!me) return null;
+
+  const qrUrl = issuedCode
+    ? `${window.location.origin}/t/${issuedCode.publicSlug}?code=${issuedCode.joinCode}`
+    : null;
 
   return (
     <div className="page page--wide">
@@ -167,7 +176,15 @@ export default function FrontHome() {
         <div className="join-code-card">
           <div className="table-hero__number">{issuedCode.tableNumber}번 테이블 입장 코드</div>
           <div className="join-code-value">{issuedCode.joinCode}</div>
-          <div className="text-muted">손님에게 이 숫자를 안내해 주세요. 자리를 정리하면 바로 만료됩니다.</div>
+          {qrUrl && (
+            <div className="join-code-qr" data-qr-url={qrUrl}>
+              <QRCodeCanvas value={qrUrl} size={180} level="M" marginSize={2} />
+            </div>
+          )}
+          <div className="text-muted">
+            손님이 카메라로 스캔하면 코드 입력 없이 바로 입장해요. 스캔이 어려우면 위 숫자를 불러 주세요.
+          </div>
+          <div className="text-muted">자리를 정리하면 바로 만료됩니다.</div>
           <ul className="danger-details" style={{ marginTop: 16 }}>
             <li>
               <span className="text-muted">이용 시작</span>
@@ -262,7 +279,7 @@ export default function FrontHome() {
                 <button
                   className="btn-secondary"
                   style={{ marginTop: 8 }}
-                  onClick={() => handleRotateCode(t.session!.id, t.number)}
+                  onClick={() => handleRotateCode(t.session!.id, t.number, t.publicSlug)}
                 >
                   입장 코드 재발급
                 </button>

@@ -5,6 +5,8 @@ interface Props {
   slug: string;
   tableNumber: number | null;
   onJoined: () => void;
+  /** QR 자동 입장이 실패했을 때 그 사유를 보여준다(수동 입력으로 넘어온 첫 화면에만 표시). */
+  initialError?: string | null;
 }
 
 /**
@@ -14,9 +16,9 @@ interface Props {
  * 링크를 다시 열어도 이 화면에서 멈추며, 직원에게 받은 이번 자리의 코드를 입력해야만
  * 서버가 이 기기에 접근 권한(device session 쿠키)을 발급한다.
  */
-export default function JoinCodeGate({ slug, tableNumber, onJoined }: Props) {
+export default function JoinCodeGate({ slug, tableNumber, onJoined, initialError = null }: Props) {
   const [code, setCode] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(initialError);
   const [submitting, setSubmitting] = useState(false);
 
   async function onSubmit(e: FormEvent) {
