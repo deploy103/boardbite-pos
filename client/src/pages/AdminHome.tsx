@@ -20,6 +20,7 @@ import BackupsPanel from "./admin/BackupsPanel.js";
 import MenuPanel from "./admin/MenuPanel.js";
 import InventoryPanel from "./admin/InventoryPanel.js";
 import CouponsPanel from "./admin/CouponsPanel.js";
+import DataResetPanel from "./admin/DataResetPanel.js";
 import CounterSalesList from "./front/CounterSalesList.js";
 
 type Tab =
@@ -36,7 +37,8 @@ type Tab =
   | "revenue"
   | "settings"
   | "backups"
-  | "closing";
+  | "closing"
+  | "data-reset";
 
 export default function AdminHome() {
   const { me } = useStaffMe("ADMIN");
@@ -65,6 +67,7 @@ export default function AdminHome() {
             "settings",
             "backups",
             "closing",
+            "data-reset",
           ] as Tab[]
         ).map((t) => (
           <button key={t} className="btn-secondary" onClick={() => setTab(t)} disabled={tab === t}>
@@ -82,6 +85,7 @@ export default function AdminHome() {
             {t === "settings" && "운영설정"}
             {t === "backups" && "백업"}
             {t === "closing" && "영업 마감"}
+            {t === "data-reset" && "데이터 초기화"}
           </button>
         ))}
       </nav>
@@ -99,6 +103,7 @@ export default function AdminHome() {
       {tab === "settings" && <SettingsPanel />}
       {tab === "backups" && <BackupsPanel mfaEnabled={me.mfaEnabled} />}
       {tab === "closing" && <ClosingPanel mfaEnabled={me.mfaEnabled} />}
+      {tab === "data-reset" && <DataResetPanel mfaEnabled={me.mfaEnabled} />}
     </div>
   );
 }

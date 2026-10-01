@@ -70,6 +70,7 @@ import {
   getCounterSaleDetail,
   listCounterSales,
 } from "../services/counterSale.js";
+import { DataResetError, RESET_SCOPES, computeResetPreview, resetData } from "../services/dataReset.js";
 
 export const adminRouter = Router();
 adminRouter.use(staffGate("ADMIN"));
@@ -1388,6 +1389,38 @@ adminRouter.get("/backups/:filename", requireStepUp, async (req, res) => {
     metadata: { filename: req.params.filename },
   });
   res.download(filePath, req.params.filename);
+});
+
+// ---------- 항목별 데이터 초기화 (리허설 데이터 정리) ----------
+
+adminRouter.get("/data-reset/preview", async (_req, res) => {
+  res.json({ preview: await computeResetPreview() });
+});
+
+/** 화면에서 그대로 입력해야 하는 확인 문구. 체크박스 실수 클릭만으로는 실행되지 않게 한다. */
+const RESET_CONFIRM_TEXT = "초기화";
+
+const dataResetSchema = z.object({
+  scopes: z.array(z.enum(RESET_SCOPES)).min(1),
+  confirmText: z.literal(RESET_CONFIRM_TEXT),
+});
+
+adminRouter.post("/data-reset", requireStepUp, async (req, res) => {
+  const parsed = dataResetSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: `초기화할 항목을 고르고 확인 문구 '${RESET_CONFIRM_TEXT}'를 정확히 입력해 주세요.` });
+    return;
+  }
+  try {
+    const result = await resetData(parsed.data.scopes, req.staff!.id);
+    res.json({ result });
+  } catch (err) {
+    if (err instanceof DataResetError) {
+      res.status(err.status).json({ error: err.message });
+      return;
+    }
+    res.status(500).json({ error: err instanceof Error ? err.message : "초기화 중 오류가 발생했어요." });
+  }
 });
 
 // ---------- 영업 마감 / 정산 (요구사항2.md §9.1) ----------
